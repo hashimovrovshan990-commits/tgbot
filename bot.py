@@ -62,7 +62,7 @@ env = load_env("tokenapi.env")
 def getenv(key, default=""):
     return os.environ.get(key, env.get(key, default))
 
-TOKEN = getenv("TOKEN") or getenv("TOKEN")
+TOKEN = getenv("TOKEN") or getenv("8781362851:AAGg3XWrz6J12_l-PoMMPiqf9CWBM0TEsbM")
 ADMIN_ID = int(getenv("ADMIN_ID", "0")) if getenv("ADMIN_ID") else 0
 ADMIN_PASSWORD = getenv("ADMIN_PASSWORD", "")
 PROVIDER_TOKEN = getenv("PROVIDER_TOKEN", "")
@@ -1258,4 +1258,5 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
