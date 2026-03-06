@@ -115,21 +115,178 @@ def user_has_subscription(user_id):
     subs = load_subscriptions()
     return subs.get(str(user_id), {}).get("active", False)
 
-# ---------- Handlers ----------
-@dp.message(Command("start"))
-async def start_cmd(message: types.Message):
-    await message.answer("Бот работает!")
+# ---------------- Проверка лимита бесплатных сделок ----------------
+async def check_free_trades_limit(user_id: int, message: types.Message) -> bool:
+    """
+    Проверяет, может ли пользователь добавить новую сделку.
+    Возвращает True, если лимит не достигнут (можно создавать сделку),
+    False, если достигнут (нельзя создавать сделку, нужно подписка)
+    """
+    if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
+        await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
+        return False
+    return True
 
+
+
+def calculate_stats(user_id: int):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT profit FROM trades WHERE user_id=?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    profits = [r[0] for r in rows]
+    total = len(profits)
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p < 0]
+    winrate = round(len(wins)/total*100, 2) if total else 0
+    avg_win = round(sum(wins)/len(wins), 2) if wins else 0
+    avg_loss = round(sum(losses)/len(losses), 2) if losses else 0
+    total_profit = round(sum(profits), 2)
+    pf = round(sum(wins)/abs(sum(losses)), 2) if losses else float('inf')
+
+    return {
+        "total": total,
+        "winrate": winrate,
+        "profit": total_profit,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "pf": pf
+    }
+
+
+def create_excel(user_id: int):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT date, pair, entry, exit, profit FROM trades WHERE user_id=?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Trades"
+    ws.append(["Дата", "Пара", "Вход", "Выход", "Прибыль"])
+    for r in rows:
+        ws.append(r)
+
+    path = f"exports/{user_id}_trades.xlsx"
+    Path("exports").mkdir(exist_ok=True)
+    wb.save(path)
+    return path
+
+
+
+def create_equity_chart(user_id: int):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT date, profit FROM trades WHERE user_id=? ORDER BY date", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    dates = [datetime.fromisoformat(r[0]) for r in rows]
+    profits = [r[1] for r in rows]
+    equity = []
+    total = 0
+    for p in profits:
+        total += p
+        equity.append(total)
+
+    fig, ax = plt.subplots()
+    ax.plot(dates, equity, marker='o')
+    ax.set_title("Equity Curve")
+    ax.set_xlabel("Дата")
+    ax.set_ylabel("Прибыль")
+    fig.autofmt_xdate()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    return buf
+
+
+
+
+# ---------------- Пример команды /trade ----------------
 @dp.message(Command("trade"))
 async def create_trade(message: types.Message):
     user_id = message.from_user.id
 
-    # Проверка лимита и подписки
-    if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
-        await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
+    # Проверка лимита бесплатных сделок
+    if not await check_free_trades_limit(user_id, message):
+        return  # останавливаем обработку, если лимит достигнут
+
+    # Дальше идет логика создания сделки
+    await message.answer("Создаём новую сделку...")
+
+
+# ---------------- Команда /stats ----------------
+@dp.message(Command("stats"))
+async def stats_cmd(message: types.Message):
+    user_id = message.from_user.id
+
+    if not await check_free_trades_limit(user_id, message):
+        return  # остановка, если лимит бесплатных сделок
+
+    stats = calculate_stats(user_id)
+    if not stats:
+        await message.answer("Нет сделок для анализа")
         return
 
-    await message.answer("Создаём новую сделку...")
+    text = f"""
+📊 Статистика
+
+Сделок: {stats["total"]}
+Winrate: {stats["winrate"]} %
+Общая прибыль: {stats["profit"]}
+Средняя прибыль: {stats["avg_win"]}
+Средний убыток: {stats["avg_loss"]}
+Profit Factor: {stats["pf"]}
+"""
+    await message.answer(text)
+
+
+# ---------------- Команда /export ----------------
+@dp.message(Command("export"))
+async def export_excel(message: types.Message):
+    user_id = message.from_user.id
+
+    if not await check_free_trades_limit(user_id, message):
+        return
+
+    file = create_excel(user_id)
+    await message.answer_document(FSInputFile(file))
+
+
+# ---------------- Команда /equity ----------------
+@dp.message(Command("equity"))
+async def equity_cmd(message: types.Message):
+    user_id = message.from_user.id
+
+    if not await check_free_trades_limit(user_id, message):
+        return
+
+    chart = create_equity_chart(user_id)
+    if chart:
+        await message.answer_photo(chart)
+    else:
+        await message.answer("Нет данных для графика")
+
+
+# ---------- Handlers ----------
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    await message.answer("Бот работает!")
+   
 
 # ---------- Webhook handler ----------
 async def handle(request):
@@ -1496,6 +1653,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
