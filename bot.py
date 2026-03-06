@@ -62,15 +62,17 @@ env = load_env("tokenapi.env")
 def getenv(key, default=""):
     return os.environ.get(key, env.get(key, default))
 
-TOKEN = getenv("TOKEN") or getenv("BOT_TOKEN")
+TOKEN = getenv("TOKEN") or getenv("TOKEN")
 ADMIN_ID = int(getenv("ADMIN_ID", "0")) if getenv("ADMIN_ID") else 0
 ADMIN_PASSWORD = getenv("ADMIN_PASSWORD", "")
-PROVIDER_TOKEN = getenv("PROVIDER_TOKEN", "")  # Telegram Payments provider token
+PROVIDER_TOKEN = getenv("PROVIDER_TOKEN", "")
 CURRENCY = getenv("CURRENCY", "USD")
-DATABASE_URL = getenv("DATABASE_URL", "")  # Use Postgres if set
+DATABASE_URL = getenv("DATABASE_URL", "")
 MAX_TRADES_FREE = int(getenv("MAX_TRADES_FREE", "20"))
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"https://your-app.onrender.com{WEBHOOK_PATH}" 
+
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL = f"https://your-app.onrender.com{WEBHOOK_PATH}"
+
 PORT = int(os.environ.get("PORT", 8000))
 
 
@@ -1256,3 +1258,4 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
