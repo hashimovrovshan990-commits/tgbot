@@ -110,6 +110,11 @@ def count_user_trades(user_id):
     conn.close()
     return count
 
+# здесь проверяем лимит
+if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
+    await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
+    return
+
 
 
 import json
@@ -136,10 +141,7 @@ def count_user_trades(user_id):
 
 user_id = message.from_user.id
 
-# здесь проверяем лимит
-if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
-    await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
-    return
+
 
 
 
@@ -1513,6 +1515,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
