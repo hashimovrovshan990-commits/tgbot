@@ -17,9 +17,11 @@ import sqlite3
 import logging
 import os
 import json
+from aiohttp import web
 from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import Optional
+
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -1259,6 +1261,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
