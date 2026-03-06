@@ -35,19 +35,12 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     FSInputFile, LabeledPrice, PreCheckoutQuery
 )
-from openpyxl import Workbook
-
-# Optional Postgres support (if you set DATABASE_URL and have psycopg2 installed)
-try:
-    import psycopg2
-except Exception:
-    psycopg2 = None
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- Load environment / tokenapi.env ----------
+# ---------- Load environment ----------
 def load_env(path="tokenapi.env"):
     env = {}
     p = Path(path)
@@ -62,27 +55,22 @@ def load_env(path="tokenapi.env"):
             env[k.strip()] = v.strip()
     return env
 
-env = load_env("tokenapi.env")
+env = load_env()
 def getenv(key, default=""):
     return os.environ.get(key, env.get(key, default))
 
 TOKEN = getenv("BOT_TOKEN")
-
-ADMIN_ID = int(getenv("ADMIN_ID", "0")) if getenv("ADMIN_ID") else 0
-ADMIN_PASSWORD = getenv("ADMIN_PASSWORD", "")
 PROVIDER_TOKEN = getenv("656a631ad8380025f54be59e11a819911a0b4010:CODE")
-CURRENCY = getenv("CURRENCY", "USD")
-DATABASE_URL = getenv("DATABASE_URL", "")
 MAX_TRADES_FREE = int(getenv("MAX_TRADES_FREE", "20"))
 
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://tgbot-ljj1.onrender.com{WEBHOOK_PATH}"
-
 PORT = int(os.environ.get("PORT", 8000))
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# ---------- Database ----------
 def init_db():
     conn = sqlite3.connect("trades.db")
     cur = conn.cursor()
@@ -110,14 +98,7 @@ def count_user_trades(user_id):
     conn.close()
     return count
 
-# здесь проверяем лимит
-if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
-    await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
-    return
-
-
-
-import json
+# ---------- Subscriptions ----------
 SUBS_FILE = "subscriptions.json"
 
 def load_subscriptions():
@@ -134,28 +115,28 @@ def user_has_subscription(user_id):
     subs = load_subscriptions()
     return subs.get(str(user_id), {}).get("active", False)
 
-def count_user_trades(user_id):
-    # для теста: пока 0, позже можно посчитать из файла с сделками
-    return 0
-
-
-user_id = message.from_user.id
-
-
-
-
-
-# Пример простого обработчика
+# ---------- Handlers ----------
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer("Бот работает!")
+
+@dp.message(Command("trade"))
+async def create_trade(message: types.Message):
+    user_id = message.from_user.id
+
+    # Проверка лимита и подписки
+    if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
+        await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
+        return
+
+    await message.answer("Создаём новую сделку...")
 
 # ---------- Webhook handler ----------
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
     await dp.feed_update(bot, update)
-    return web.Response()
+    return web.Response(text="OK")
 
 # ---------- Startup ----------
 async def on_startup(app):
@@ -1515,6 +1496,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
