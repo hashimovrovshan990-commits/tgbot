@@ -70,7 +70,7 @@ TOKEN = getenv("BOT_TOKEN")
 
 ADMIN_ID = int(getenv("ADMIN_ID", "0")) if getenv("ADMIN_ID") else 0
 ADMIN_PASSWORD = getenv("ADMIN_PASSWORD", "")
-PROVIDER_TOKEN = getenv("PROVIDER_TOKEN", "")
+PROVIDER_TOKEN = getenv("656a631ad8380025f54be59e11a819911a0b4010:CODE")
 CURRENCY = getenv("CURRENCY", "USD")
 DATABASE_URL = getenv("DATABASE_URL", "")
 MAX_TRADES_FREE = int(getenv("MAX_TRADES_FREE", "20"))
@@ -109,6 +109,37 @@ def count_user_trades(user_id):
     count = cur.fetchone()[0]
     conn.close()
     return count
+
+
+
+import json
+SUBS_FILE = "subscriptions.json"
+
+def load_subscriptions():
+    if Path(SUBS_FILE).exists():
+        return json.loads(Path(SUBS_FILE).read_text(encoding="utf-8"))
+    return {}
+
+def save_user_subscription(user_id):
+    subs = load_subscriptions()
+    subs[str(user_id)] = {"active": True, "date": datetime.now().isoformat()}
+    Path(SUBS_FILE).write_text(json.dumps(subs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def user_has_subscription(user_id):
+    subs = load_subscriptions()
+    return subs.get(str(user_id), {}).get("active", False)
+
+def count_user_trades(user_id):
+    # для теста: пока 0, позже можно посчитать из файла с сделками
+    return 0
+
+
+user_id = message.from_user.id
+
+# здесь проверяем лимит
+if not user_has_subscription(user_id) and count_user_trades(user_id) >= MAX_TRADES_FREE:
+    await message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку.")
+    return
 
 
 
@@ -1430,6 +1461,42 @@ async def equity_cmd(message: types.Message):
     else:
         await message.answer("Нет данных для графика")
 
+
+from aiogram.types import LabeledPrice, PreCheckoutQuery
+
+@dp.message(Command("subscribe"))
+async def subscribe_cmd(message: types.Message):
+    prices = [LabeledPrice(label="Подписка на 1 месяц", amount=500)]  # 5 USD = 500 центов
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Подписка на бота",
+        description="Доступ к неограниченному количеству сделок и аналитике",
+        provider_token=PROVIDER_TOKEN,
+        currency=CURRENCY,
+        prices=prices,
+        start_parameter="subscribe_bot",
+        payload=f"subscribe:{message.from_user.id}"  # можно передать user_id
+    )
+
+
+@dp.pre_checkout_query()
+async def checkout(pre_checkout_q: PreCheckoutQuery):
+    # просто подтверждаем платёж
+    await bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
+
+
+
+@dp.message(F.content_type == "successful_payment")
+async def successful_payment(message: types.Message):
+    user_id = message.from_user.id
+    await message.answer("✅ Оплата прошла успешно! Подписка активирована.")
+    
+    # сохраняем подписку пользователя (например, в SQLite или JSON)
+    save_user_subscription(user_id)
+
+
+
+
 # ---------- Main ----------
 async def handle_update(request):
     data = await request.json()
@@ -1446,6 +1513,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
