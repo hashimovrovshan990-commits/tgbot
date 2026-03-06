@@ -107,9 +107,7 @@ app.router.add_post(WEBHOOK_PATH, handle)
 for d in ("trade_photos", "exports", "trade_checklists", "checklist_templates"):
     Path(d).mkdir(parents=True, exist_ok=True)
 
-# ---------- Run ----------
-if __name__ == "__main__":
-    web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 # ---------- Localization ----------
 LANG = {
@@ -1289,6 +1287,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
