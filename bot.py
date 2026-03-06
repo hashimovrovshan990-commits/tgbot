@@ -82,28 +82,34 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # Пример простого обработчика
-@dp.message_handler(commands=["start"])
+@dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer("Бот работает!")
 
-# ----------------- Webhook handler -----------------
+# ---------- Webhook handler ----------
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.process_update(update)
+    await dp.feed_update(bot, update)
     return web.Response()
 
-app = web.Application()
-app.router.add_post(f"/webhook/{TOKEN}", handle)
+# ---------- Startup ----------
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    print("Webhook установлен:", WEBHOOK_URL)
 
-# ----------------- Запуск сервера -----------------
-if __name__ == "__main__":
-    web.run_app(app, port=PORT)
+# ---------- App ----------
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle)
 
 
 # ---------- Create folders ----------
 for d in ("trade_photos", "exports", "trade_checklists", "checklist_templates"):
     Path(d).mkdir(parents=True, exist_ok=True)
+
+# ---------- Run ----------
+if __name__ == "__main__":
+    web.run_app(app, port=PORT, on_startup=[on_startup])
 
 # ---------- Localization ----------
 LANG = {
@@ -1270,8 +1276,8 @@ async def edit_checklist_save(message: types.Message, state: FSMContext):
 # ---------- Main ----------
 async def handle_update(request):
     data = await request.json()
-    update = Update(**data)
-    await dp.process_update(update)
+    update = types.Update(**data)
+    await dp.feed_update(bot, update)
     return web.Response(text="OK")
 
 async def on_startup(app):
@@ -1283,6 +1289,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
