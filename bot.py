@@ -17,6 +17,8 @@ import sqlite3
 import logging
 import os
 import json
+import matplotlib.pyplot as plt
+from io import BytesIO
 from aiohttp import web
 from pathlib import Path
 from datetime import datetime, timedelta, date
@@ -80,6 +82,35 @@ PORT = int(os.environ.get("PORT", 8000))
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+def init_db():
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        date TEXT,
+        pair TEXT,
+        entry REAL,
+        exit REAL,
+        profit REAL
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def count_user_trades(user_id):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM trades WHERE user_id=?", (user_id,))
+    count = cur.fetchone()[0]
+    conn.close()
+    return count
+
+
 
 # Пример простого обработчика
 @dp.message(Command("start"))
@@ -496,6 +527,98 @@ async def start(message: types.Message):
     except Exception:
         logger.exception("start handler DB error")
     await message.answer(get_text(user_id, "start"), reply_markup=main_menu(user_id))
+
+
+if count_user_trades(user_id) >= MAX_TRADES_FREE:
+    await message.answer(
+        "Вы достигли лимита бесплатных сделок.\n\n"
+        "Чтобы продолжить, купите подписку."
+    )
+    return
+
+
+def calculate_stats(user_id):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT profit FROM trades WHERE user_id=?", (user_id,))
+    trades = [row[0] for row in cur.fetchall()]
+    conn.close()
+
+    total = len(trades)
+    if total == 0:
+        return None
+
+    wins = [t for t in trades if t > 0]
+    losses = [t for t in trades if t <= 0]
+
+    winrate = len(wins)/total*100 if total else 0
+    total_profit = sum(trades)
+    avg_win = sum(wins)/len(wins) if wins else 0
+    avg_loss = sum(losses)/len(losses) if losses else 0
+    pf = abs(sum(wins)/sum(losses)) if losses else 0
+
+    return {
+        "total": total,
+        "winrate": round(winrate,2),
+        "profit": round(total_profit,2),
+        "avg_win": round(avg_win,2),
+        "avg_loss": round(avg_loss,2),
+        "pf": round(pf,2)
+    }
+
+
+def create_excel(user_id):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT date,pair,entry,exit,profit FROM trades WHERE user_id=?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Date","Pair","Entry","Exit","Profit"])
+    for r in rows:
+        ws.append(r)
+
+    file = f"exports/{user_id}_trades.xlsx"
+    wb.save(file)
+    return file
+
+
+def create_equity_chart(user_id):
+    conn = sqlite3.connect("trades.db")
+    cur = conn.cursor()
+    cur.execute("SELECT date, profit FROM trades WHERE user_id=? ORDER BY date", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    dates = [datetime.fromisoformat(r[0]) for r in rows]
+    profits = [r[1] for r in rows]
+
+    equity = []
+    total = 0
+    for p in profits:
+        total += p
+        equity.append(total)
+
+    plt.figure(figsize=(8,4))
+    plt.plot(dates, equity, marker='o')
+    plt.title("Equity Curve")
+    plt.xlabel("Date")
+    plt.ylabel("Profit")
+    plt.grid(True)
+
+    buf = BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close()
+
+    return buf
+
+
 
 @dp.message(F.text.regexp(r"📊|My Trades"))
 async def trades_menu(message: types.Message):
@@ -1271,6 +1394,42 @@ async def edit_checklist_save(message: types.Message, state: FSMContext):
         logger.exception("edit_checklist_save error")
         await message.answer("Error saving checklist")
 
+
+@dp.message(Command("stats"))
+async def stats_cmd(message: types.Message):
+    user_id = message.from_user.id
+    stats = calculate_stats(user_id)
+    if not stats:
+        await message.answer("Нет сделок для анализа")
+        return
+
+    text = f"""
+📊 Статистика
+
+Сделок: {stats["total"]}
+Winrate: {stats["winrate"]} %
+Общая прибыль: {stats["profit"]}
+Средняя прибыль: {stats["avg_win"]}
+Средний убыток: {stats["avg_loss"]}
+Profit Factor: {stats["pf"]}
+"""
+    await message.answer(text)
+
+@dp.message(Command("export"))
+async def export_excel(message: types.Message):
+    user_id = message.from_user.id
+    file = create_excel(user_id)
+    await message.answer_document(FSInputFile(file))
+
+@dp.message(Command("equity"))
+async def equity_cmd(message: types.Message):
+    user_id = message.from_user.id
+    chart = create_equity_chart(user_id)
+    if chart:
+        await message.answer_photo(chart)
+    else:
+        await message.answer("Нет данных для графика")
+
 # ---------- Main ----------
 async def handle_update(request):
     data = await request.json()
@@ -1287,6 +1446,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
