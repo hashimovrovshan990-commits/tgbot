@@ -69,6 +69,10 @@ PROVIDER_TOKEN = getenv("PROVIDER_TOKEN", "")  # Telegram Payments provider toke
 CURRENCY = getenv("CURRENCY", "USD")
 DATABASE_URL = getenv("DATABASE_URL", "")  # Use Postgres if set
 MAX_TRADES_FREE = int(getenv("MAX_TRADES_FREE", "20"))
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"https://your-app.onrender.com{WEBHOOK_PATH}" 
+PORT = int(os.environ.get("PORT", 8000))
+
 
 # ---------- Create folders ----------
 for d in ("trade_photos", "exports", "trade_checklists", "checklist_templates"):
@@ -1237,9 +1241,18 @@ async def edit_checklist_save(message: types.Message, state: FSMContext):
         await message.answer("Error saving checklist")
 
 # ---------- Main ----------
-async def main():
-    logger.info("✅ BOT STARTED")
-    await dp.start_polling(bot)
+async def handle_update(request):
+    data = await request.json()
+    update = Update(**data)
+    await dp.process_update(update)
+    return web.Response(text="OK")
+
+async def on_startup(app):
+    await bot.delete_webhook()
+    await bot.set_webhook(WEBHOOK_URL)
+
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(app, port=PORT, on_startup=[on_startup])
