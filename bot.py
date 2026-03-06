@@ -73,10 +73,32 @@ CURRENCY = getenv("CURRENCY", "USD")
 DATABASE_URL = getenv("DATABASE_URL", "")
 MAX_TRADES_FREE = int(getenv("MAX_TRADES_FREE", "20"))
 
-WEBHOOK_PATH = f"/webhook/{8781362851:AAGg3XWrz6J12_l-PoMMPiqf9CWBM0TEsbM}"
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://tgbot-ljj1.onrender.com{WEBHOOK_PATH}"
 
 PORT = int(os.environ.get("PORT", 8000))
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# Пример простого обработчика
+@dp.message_handler(commands=["start"])
+async def start_cmd(message: types.Message):
+    await message.answer("Бот работает!")
+
+# ----------------- Webhook handler -----------------
+async def handle(request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.process_update(update)
+    return web.Response()
+
+app = web.Application()
+app.router.add_post(f"/webhook/{TOKEN}", handle)
+
+# ----------------- Запуск сервера -----------------
+if __name__ == "__main__":
+    web.run_app(app, port=PORT)
 
 
 # ---------- Create folders ----------
@@ -1261,6 +1283,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
