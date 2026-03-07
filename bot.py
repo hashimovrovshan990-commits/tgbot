@@ -65,7 +65,7 @@ MAX_TRADES_FREE = int(getenv("MAX_TRADES_FREE", "20"))
 
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://tgbot-ljj1.onrender.com{WEBHOOK_PATH}"
-PORT = int(os.environ.get("PORT", 8000))
+PORT = int(os.environ.get("PORT", 5000))
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -1662,6 +1662,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
