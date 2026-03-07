@@ -263,7 +263,7 @@ LANG = {
         "history": "📋 История",
         "edit": "✏️ Изменить",
         "delete": "🗑 Удалить",
-        "accounts": "💼 Счет��",
+        "accounts": "💼 Счет",
         "create_acc": "➕ Создать",
         "list_acc": "📋 Список",
         "analytics": "📈 Аналитика",
@@ -350,7 +350,7 @@ LANG = {
         "create_acc": "➕ Create",
         "list_acc": "📋 List",
         "analytics": "📈 Analytics",
-        "export": "📊 Export",
+        "export": " Export",
         "help": "❓ Help",
         "settings": "⚙️ Settings",
         "select_account": "Select account:",
@@ -1498,6 +1498,7 @@ if __name__ == "__main__":
         logger.error("BOT_TOKEN not set!")
         exit(1)
     web.run_app(app, port=PORT, host="0.0.0.0")
+
 
 
 
