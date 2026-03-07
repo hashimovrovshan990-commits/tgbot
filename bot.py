@@ -58,6 +58,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "database.db")
 
 db = Database(db_path=DATABASE_URL)
 
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "rovshan131017!")
+
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -1104,7 +1106,7 @@ async def analytics(message: types.Message):
 
 # ===== EXPORT HANDLERS =====
 
-@dp.message(F.text.regexp(r"📊|Export"))
+@dp.message(F.text == "📊 Экспорт")
 async def export_start(message: types.Message):
     user_id = message.from_user.id
     db.cursor.execute("SELECT id, name FROM accounts WHERE user_id=?", (user_id,))
@@ -1194,10 +1196,36 @@ async def equity_cmd(message: types.Message):
 @dp.message(F.text.regexp(r"❓|Help"))
 async def help_cmd(message: types.Message):
     user_id = message.from_user.id
-    text = """📚 GUIDE (short)
+    text = """
+📚 ПОМОЩЬ
 
-Use menus to add trades, manage accounts, export and subscribe.
-Full detailed guide is in your project README."""
+➕ Новая сделка
+Добавляет новую торговую сделку.
+
+📊 Мои сделки
+Просмотр всех сделок.
+
+📈 Аналитика
+Статистика торговли:
+• прибыль
+• winrate
+• profit factor
+
+📊 Экспорт
+Скачивает Excel файл со всеми сделками.
+
+💼 Счета
+Управление торговыми счетами.
+
+💳 Подписка
+Убирает лимит сделок.
+
+Бесплатно:
+до 20 сделок
+
+Премиум:
+без ограничений
+"""
     await message.answer(text, reply_markup=main_menu(user_id))
 
 # ===== SETTINGS HANDLER =====
@@ -1328,6 +1356,32 @@ async def cmd_grant_manual(message: types.Message):
         except Exception:
             pass
 
+
+@dp.message(Command("admin"))
+async def admin_login(message: types.Message):
+
+    parts = message.text.split()
+
+    if len(parts) < 2:
+        await message.answer("Использование: /admin пароль")
+        return
+
+    password = parts[1]
+
+    if password != ADMIN_PASSWORD:
+        await message.answer("Неверный пароль")
+        return
+
+    user_id = message.from_user.id
+
+    db.cursor.execute(
+        "INSERT OR REPLACE INTO subscriptions (user_id, expires_at) VALUES (?, ?)",
+        (user_id, "2099-01-01")
+    )
+    db.conn.commit()
+
+    await message.answer("Админ доступ активирован")
+
 # ===== CHECKLIST TEMPLATES HANDLERS =====
 
 @dp.message(Command("templates"))
@@ -1444,6 +1498,7 @@ if __name__ == "__main__":
         logger.error("BOT_TOKEN not set!")
         exit(1)
     web.run_app(app, port=PORT, host="0.0.0.0")
+
 
 
 
