@@ -36,7 +36,11 @@ from aiogram.types import (
     FSInputFile, LabeledPrice, PreCheckoutQuery
 )
 
-db = Database()
+
+DATABASE_URL = os.getenv("DATABASE_URL", "database.db")
+
+db = Database(db_url=DATABASE_URL)
+
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -1680,6 +1684,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
