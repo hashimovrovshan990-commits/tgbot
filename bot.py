@@ -251,7 +251,7 @@ async def create_trade(message: types.Message):
 @dp.message(Command("stats"))
 async def stats_cmd(message: types.Message):
     user_id = message.from_user.id
-      await db.add_user(user_id)
+    await db.add_user(user_id)
 
     if not await check_free_trades(user_id, message):
         return  # остановка, если лимит бесплатных сделок
@@ -1680,6 +1680,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
