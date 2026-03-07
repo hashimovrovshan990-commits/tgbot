@@ -214,6 +214,16 @@ def create_equity_chart(user_id: int):
     return buf
 
 
+ async def check_free_trades(user_id: int, message: types.Message) -> bool:
+    if count_user_trades(user_id) >= MAX_TRADES_FREE:
+        await message.answer(
+            "Вы достигли лимита бесплатных сделок.\n\n"
+            "Чтобы продолжить, купите подписку."
+        )
+        return False
+    return True
+
+
 
 
 # ---------------- Пример команды /trade ----------------
@@ -221,8 +231,12 @@ def create_equity_chart(user_id: int):
 async def create_trade(message: types.Message):
     user_id = message.from_user.id
 
+
+   
+    
+
     # Проверка лимита бесплатных сделок
-    if not await check_free_trades_limit(user_id, message):
+    if not await check_free_trades(user_id, message):
         return  # останавливаем обработку, если лимит достигнут
 
     # Дальше идет логика создания сделки
@@ -234,7 +248,7 @@ async def create_trade(message: types.Message):
 async def stats_cmd(message: types.Message):
     user_id = message.from_user.id
 
-    if not await check_free_trades_limit(user_id, message):
+    if not await check_free_trades(user_id, message):
         return  # остановка, если лимит бесплатных сделок
 
     stats = calculate_stats(user_id)
@@ -700,12 +714,7 @@ async def start(message: types.Message):
     await message.answer(get_text(user_id, "start"), reply_markup=main_menu(user_id))
 
 
-if count_user_trades(user_id) >= MAX_TRADES_FREE:
-    await message.answer(
-        "Вы достигли лимита бесплатных сделок.\n\n"
-        "Чтобы продолжить, купите подписку."
-    )
-    return
+
 
 
 def calculate_stats(user_id):
@@ -1653,6 +1662,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
