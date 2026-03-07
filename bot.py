@@ -56,7 +56,7 @@ from openpyxl import Workbook
 # ===== Переменные окружения =====
 DATABASE_URL = os.getenv("DATABASE_URL", "database.db")
 
-db = Database(db_url=DATABASE_URL)
+db = Database(db_path=DATABASE_URL)
 
 
 # ---------- Logging ----------
@@ -1444,6 +1444,7 @@ if __name__ == "__main__":
         logger.error("BOT_TOKEN not set!")
         exit(1)
     web.run_app(app, port=PORT, host="0.0.0.0")
+
 
 
 
