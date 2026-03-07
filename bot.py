@@ -24,7 +24,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import Optional
 
-
+from database import Database
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -1681,6 +1681,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
