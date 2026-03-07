@@ -260,6 +260,36 @@ def calculate_full_stats(user_id: int):
     }
 
 
+def recalc_account_balance(user_id: int, account_id: int):
+    """
+    Пересчитывает текущий баланс счёта как initial_balance + сумма pnl по всем сделкам счёта.
+    """
+    if account_id is None:
+        return
+    try:
+        db.cursor.execute(
+            "SELECT initial_balance FROM accounts WHERE id=? AND user_id=?",
+            (account_id, user_id),
+        )
+        row = db.cursor.fetchone()
+        if not row:
+            return
+        initial = float(row[0])
+        db.cursor.execute(
+            "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE user_id=? AND account_id=?",
+            (user_id, account_id),
+        )
+        total_pnl = float(db.cursor.fetchone()[0] or 0)
+        new_balance = initial + total_pnl
+        db.cursor.execute(
+            "UPDATE accounts SET current_balance=? WHERE id=? AND user_id=?",
+            (new_balance, account_id, user_id),
+        )
+        db.commit()
+    except Exception:
+        logger.exception("recalc_account_balance failed")
+
+
 def create_excel(user_id: int):
     try:
         db.cursor.execute(
@@ -1021,6 +1051,9 @@ async def save_trade(call: types.CallbackQuery, state: FSMContext):
              data.get("take_profit", 0), data.get("status", "N/A"), data.get("strategy", "N/A"),
              data.get("checklist"), data.get("notes", ""), data.get("screenshot_path"), 0))
         db.cursor.execute("UPDATE users SET total_trades=total_trades+1 WHERE user_id=?", (user_id,))
+        # Пересчитываем баланс счёта на основе PnL (пока 0, эффект появится после заполнения pnl)
+        acc_id = data.get("account_id")
+        recalc_account_balance(user_id, acc_id)
         db.commit()
         await state.clear()
         await call.message.edit_text(get_text(user_id, "saved"))
@@ -1137,8 +1170,15 @@ async def del_id(call: types.CallbackQuery):
         await call.answer()
         return
     try:
+        # Определяем счёт, чтобы пересчитать баланс после удаления сделки
+        db.cursor.execute("SELECT account_id FROM trades WHERE id=? AND user_id=?", (tid, user_id))
+        acc_row = db.cursor.fetchone()
+        account_id = acc_row[0] if acc_row else None
+
         db.cursor.execute("DELETE FROM trades WHERE id=? AND user_id=?", (tid, user_id))
         db.cursor.execute("UPDATE users SET total_trades=total_trades-1 WHERE user_id=?", (user_id,))
+        if account_id is not None:
+            recalc_account_balance(user_id, account_id)
         db.commit()
         await call.message.edit_text(get_text(user_id, "deleted"))
     except Exception:
@@ -1168,10 +1208,30 @@ async def edit_id(call: types.CallbackQuery, state: FSMContext):
         await call.answer()
         return
     await state.update_data(trade_id=tid)
-    fields = [get_text(user_id, "pair"), get_text(user_id, "type"), get_text(user_id, "open_date"),
-              get_text(user_id, "close_date"), get_text(user_id, "amount"), get_text(user_id, "tp"),
-              get_text(user_id, "status"), get_text(user_id, "strategy"), get_text(user_id, "notes")]
-    keys = ["pair", "trade_type", "open_date", "close_date", "amount", "take_profit", "status", "strategy", "notes"]
+    fields = [
+        get_text(user_id, "pair"),
+        get_text(user_id, "type"),
+        get_text(user_id, "open_date"),
+        get_text(user_id, "close_date"),
+        get_text(user_id, "amount"),
+        get_text(user_id, "tp"),
+        get_text(user_id, "status"),
+        get_text(user_id, "strategy"),
+        get_text(user_id, "notes"),
+        get_text(user_id, "pnl"),
+    ]
+    keys = [
+        "pair",
+        "trade_type",
+        "open_date",
+        "close_date",
+        "amount",
+        "take_profit",
+        "status",
+        "strategy",
+        "notes",
+        "pnl",
+    ]
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f, callback_data=f"ed_f_{k}")] for f, k in zip(fields, keys)])
     await call.message.edit_text(get_text(user_id, "select_field"), reply_markup=kb)
     await state.set_state(States.edit_field)
@@ -1181,9 +1241,16 @@ async def edit_id(call: types.CallbackQuery, state: FSMContext):
 async def ed_f(call: types.CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
     field_map = {
-        "pair": "pair", "trade_type": "trade_type", "open_date": "open_date",
-        "close_date": "close_date", "amount": "amount", "take_profit": "take_profit",
-        "status": "status", "strategy": "strategy", "notes": "notes"
+        "pair": "pair",
+        "trade_type": "trade_type",
+        "open_date": "open_date",
+        "close_date": "close_date",
+        "amount": "amount",
+        "take_profit": "take_profit",
+        "status": "status",
+        "strategy": "strategy",
+        "notes": "notes",
+        "pnl": "pnl",
     }
     field_short = call.data.split("_")[2]
     field = field_map.get(field_short, field_short)
@@ -1207,19 +1274,27 @@ async def save_edit(message: types.Message, state: FSMContext):
     tid = data.get("trade_id")
     field = data.get("field")
     value = message.text
-    allowed_fields = {"pair", "trade_type", "open_date", "close_date", "amount", "take_profit", "status", "strategy", "notes"}
+    allowed_fields = {"pair", "trade_type", "open_date", "close_date", "amount", "take_profit", "status", "strategy", "notes", "pnl"}
     if field not in allowed_fields:
         await state.clear()
         await message.answer("❌ Invalid field")
         return
-    if field in ("amount", "take_profit"):
+    if field in ("amount", "take_profit", "pnl"):
         try:
             value = float(value)
         except ValueError:
             await message.answer(f"❌ {get_text(user_id, 'new_value')}")
             return
     try:
+        # Получаем счёт сделки до обновления, чтобы пересчитать баланс
+        db.cursor.execute("SELECT account_id FROM trades WHERE id=? AND user_id=?", (tid, user_id))
+        acc_row = db.cursor.fetchone()
+        account_id = acc_row[0] if acc_row else None
+
         db.cursor.execute("UPDATE trades SET " + field + "=? WHERE id=? AND user_id=?", (value, tid, user_id))
+        # Если изменили pnl, пересчитаем баланс счёта
+        if field == "pnl" and account_id is not None:
+            recalc_account_balance(user_id, account_id)
         db.commit()
         await state.clear()
         await message.answer(f"✅ {get_text(user_id, 'saved')}")
@@ -1409,6 +1484,24 @@ async def export_do(call: types.CallbackQuery):
     ws.append(headers)
     for row in trades:
         ws.append(list(row))
+
+    # Лист с аналитикой и риск-менеджментом по пользователю
+    stats = calculate_full_stats(user_id)
+    if stats:
+        ws_stats = wb.create_sheet(title="Analytics")
+        ws_stats.append(["Метрика", "Значение"])
+        ws_stats.append([get_text(user_id, "all_trades"), stats["total"]])
+        ws_stats.append([get_text(user_id, "profit"), stats["profitable"]])
+        ws_stats.append([get_text(user_id, "loss"), stats["losing"]])
+        ws_stats.append([get_text(user_id, "total_pnl_label"), stats["total_pnl"]])
+        ws_stats.append([get_text(user_id, "avg_trade_label"), stats["avg_trade"]])
+        ws_stats.append([get_text(user_id, "best_trade_label"), stats["best_trade"]])
+        ws_stats.append([get_text(user_id, "worst_trade_label"), stats["worst_trade"]])
+        ws_stats.append([get_text(user_id, "rr_label"), stats["avg_rr"]])
+        ws_stats.append([get_text(user_id, "avg_risk_label"), stats["avg_risk"]])
+        ws_stats.append([get_text(user_id, "max_dd_label"), stats["max_drawdown"]])
+        ws_stats.append([get_text(user_id, "win_streak_label"), stats["win_streak"]])
+        ws_stats.append([get_text(user_id, "loss_streak_label"), stats["loss_streak"]])
     fn = f"exports/trades_{user_id}_{aid}_{int(datetime.now().timestamp())}.xlsx"
     try:
         wb.save(fn)
@@ -1636,9 +1729,39 @@ async def cmd_grant_manual(message: types.Message):
             pass
 
 
+async def _activate_admin_premium(user_id: int, username: str, first_name: str) -> bool:
+    """
+    Общая логика активации админ-премиума для пользователя.
+    """
+    try:
+        period_end = "2099-12-31T23:59:59"
+        db.cursor.execute(
+            "UPDATE users SET is_premium=1, premium_until=? WHERE user_id=?",
+            (period_end, user_id),
+        )
+        if db.cursor.rowcount == 0:
+            db.cursor.execute(
+                """INSERT INTO users(user_id, username, first_name, is_premium, premium_until)
+                   VALUES(?, ?, ?, 1, ?)""",
+                (user_id, username or "", first_name or "User", period_end),
+            )
+        db.cursor.execute(
+            "INSERT INTO subscriptions(user_id, provider, provider_id, status, period_end) VALUES(?, ?, ?, ?, ?)",
+            (user_id, "admin_login", "", "active", period_end),
+        )
+        db.commit()
+        return True
+    except Exception:
+        logger.exception("admin_login failed")
+        return False
+
+
 @dp.message(Command("admin"))
-async def admin_login(message: types.Message):
-    """Вход по паролю: даёт безлимит (премиум) за счёт users.is_premium / premium_until."""
+async def admin_login(message: types.Message, state: FSMContext):
+    """
+    Вход по паролю: можно указать пароль в одном сообщении (/admin пароль)
+    или в два шага: /admin -> бот просит пароль -> пользователь отправляет пароль.
+    """
     parts = message.text.split()
     # region agent log
     try:
@@ -1647,7 +1770,7 @@ async def admin_login(message: types.Message):
                 "sessionId": "ba46ab",
                 "runId": "initial",
                 "hypothesisId": "H3",
-                "location": "bot(3).py:1460",
+                "location": "bot(3).py:admin_command",
                 "message": "admin_login_called",
                 "data": {
                     "user_id": message.from_user.id,
@@ -1658,36 +1781,40 @@ async def admin_login(message: types.Message):
     except Exception:
         pass
     # endregion
-    if len(parts) < 2:
-        await message.answer("Использование: /admin пароль")
+    if len(parts) >= 2:
+        password = parts[1].strip()
+        if password != ADMIN_PASSWORD:
+            await message.answer("Неверный пароль")
+            return
+        ok = await _activate_admin_premium(message.from_user.id, message.from_user.username, message.from_user.first_name)
+        if ok:
+            await message.answer("✅ Админ-доступ активирован. Безлимитные сделки включены.")
+        else:
+            await message.answer("❌ Ошибка при активации. Попробуйте позже.")
         return
-    password = parts[1].strip()
+
+    # Запрашиваем пароль отдельным сообщением
+    await state.set_state(States.admin_wait_password)
+    await message.answer("Введите пароль администратора:")
+
+
+@dp.message(States.admin_wait_password)
+async def admin_password_step(message: types.Message, state: FSMContext):
+    """
+    Обработка пароля администратора, отправленного отдельным сообщением после /admin.
+    """
+    user_id = message.from_user.id
+    password = (message.text or "").strip()
     if password != ADMIN_PASSWORD:
+        await state.clear()
         await message.answer("Неверный пароль")
         return
-    user_id = message.from_user.id
-    try:
-        # Лимит проверяется по users.is_premium и users.premium_until — обновляем их
-        period_end = "2099-12-31T23:59:59"
-        db.cursor.execute(
-            "UPDATE users SET is_premium=1, premium_until=? WHERE user_id=?",
-            (period_end, user_id),
-        )
-        if db.cursor.rowcount == 0:
-            # Пользователя ещё нет в users — создаём и даём премиум
-            db.cursor.execute(
-                """INSERT INTO users(user_id, username, first_name, is_premium, premium_until)
-                   VALUES(?, ?, ?, 1, ?)""",
-                (user_id, message.from_user.username or "", message.from_user.first_name or "User", period_end),
-            )
-        db.cursor.execute(
-            "INSERT INTO subscriptions(user_id, provider, provider_id, status, period_end) VALUES(?, ?, ?, ?, ?)",
-            (user_id, "admin_login", "", "active", period_end),
-        )
-        db.commit()
+
+    ok = await _activate_admin_premium(user_id, message.from_user.username, message.from_user.first_name)
+    await state.clear()
+    if ok:
         await message.answer("✅ Админ-доступ активирован. Безлимитные сделки включены.")
-    except Exception:
-        logger.exception("admin_login failed")
+    else:
         await message.answer("❌ Ошибка при активации. Попробуйте позже.")
 
 # ===== CHECKLIST TEMPLATES HANDLERS =====
@@ -1810,30 +1937,3 @@ if __name__ == "__main__":
         logger.error("BOT_TOKEN not set!")
         exit(1)
     web.run_app(app, port=PORT, host="0.0.0.0")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
