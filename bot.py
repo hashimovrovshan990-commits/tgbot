@@ -167,6 +167,99 @@ def calculate_stats(user_id: int):
     }
 
 
+def calculate_full_stats(user_id: int):
+    """
+    Расширенная статистика и риск-менеджмент по всем сделкам пользователя.
+    Использует поле pnl из таблицы trades.
+    """
+    try:
+        db.cursor.execute(
+            "SELECT pnl, status, amount, take_profit, created_at FROM trades WHERE user_id=? ORDER BY created_at",
+            (user_id,),
+        )
+        rows = db.cursor.fetchall()
+    except Exception:
+        logger.exception("calculate_full_stats failed")
+        return None
+    if not rows:
+        return None
+
+    pnls = [float(r[0]) for r in rows if r[0] is not None]
+    if not pnls:
+        return None
+
+    total = len(pnls)
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+
+    profitable_count = len(wins)
+    losing_count = len(losses)
+    win_rate = round(profitable_count / total * 100, 2) if total else 0.0
+
+    total_pnl = round(sum(pnls), 2)
+    avg_trade = round(total_pnl / total, 2) if total else 0.0
+
+    best_trade = max(pnls) if pnls else 0.0
+    worst_trade = min(pnls) if pnls else 0.0
+
+    # Средний риск на сделку — средний абсолютный убыток по убыточным сделкам
+    avg_risk = round(sum(abs(p) for p in losses) / losing_count, 2) if losing_count else 0.0
+
+    # Средний RR ~ отношение средней прибыли к средней потере
+    avg_win = sum(wins) / profitable_count if profitable_count else 0.0
+    avg_loss_abs = abs(sum(losses) / losing_count) if losing_count else 0.0
+    avg_rr = round(avg_win / avg_loss_abs, 2) if avg_loss_abs > 0 else float("inf")
+
+    # Максимальная просадка по equity
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for p in pnls:
+        equity += p
+        if equity > peak:
+            peak = equity
+        drawdown = peak - equity
+        if drawdown > max_drawdown:
+            max_drawdown = drawdown
+    max_drawdown = round(max_drawdown, 2)
+
+    # Серии побед и убытков
+    max_win_streak = 0
+    max_loss_streak = 0
+    cur_win_streak = 0
+    cur_loss_streak = 0
+    for p in pnls:
+        if p > 0:
+            cur_win_streak += 1
+            cur_loss_streak = 0
+        elif p < 0:
+            cur_loss_streak += 1
+            cur_win_streak = 0
+        else:
+            cur_win_streak = 0
+            cur_loss_streak = 0
+        if cur_win_streak > max_win_streak:
+            max_win_streak = cur_win_streak
+        if cur_loss_streak > max_loss_streak:
+            max_loss_streak = cur_loss_streak
+
+    return {
+        "total": total,
+        "profitable": profitable_count,
+        "losing": losing_count,
+        "win_rate": win_rate,
+        "total_pnl": total_pnl,
+        "avg_trade": avg_trade,
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "avg_risk": avg_risk,
+        "avg_rr": avg_rr,
+        "max_drawdown": max_drawdown,
+        "win_streak": max_win_streak,
+        "loss_streak": max_loss_streak,
+    }
+
+
 def create_excel(user_id: int):
     try:
         db.cursor.execute(
@@ -324,6 +417,17 @@ LANG = {
         "apply_template": "Применить шаблон",
         "edit_checklists": "Редактировать чеклисты",
         "no_templates": "Нет шаблонов",
+        "total_pnl_label": "Общая прибыль / убыток",
+        "avg_trade_label": "Средний результат сделки",
+        "best_trade_label": "Самая прибыльная сделка",
+        "worst_trade_label": "Самая убыточная сделка",
+        "risk_section": "Риск-менеджмент (дисциплина трейдера):",
+        "rr_label": "Средний RR (Risk / Reward)",
+        "avg_risk_label": "Средний риск на сделку",
+        "max_dd_label": "Максимальная просадка",
+        "win_streak_label": "Серия побед",
+        "loss_streak_label": "Серия убытков",
+        "pnl": "P/L",
     },
     "en": {
         "start": "🧭 TRADER'S JOURNAL\n\n✓ Add trades (LONG/SHORT)\n✓ Full analytics\n✓ Trading checklists\n✓ Export to Excel\n✓ Calendar for dates\n✓ Up to {} trades free\n\nSelect action:".format(MAX_TRADES_FREE),
@@ -407,6 +511,17 @@ LANG = {
         "apply_template": "Apply template",
         "edit_checklists": "Edit checklists",
         "no_templates": "No templates",
+        "total_pnl_label": "Total P/L",
+        "avg_trade_label": "Average trade result",
+        "best_trade_label": "Best trade",
+        "worst_trade_label": "Worst trade",
+        "risk_section": "Risk management (trader discipline):",
+        "rr_label": "Average RR (Risk / Reward)",
+        "avg_risk_label": "Average risk per trade",
+        "max_dd_label": "Maximum drawdown",
+        "win_streak_label": "Win streak",
+        "loss_streak_label": "Loss streak",
+        "pnl": "P/L",
     }
 }
 
@@ -438,6 +553,7 @@ class States(StatesGroup):
     edit_trade = State()
     edit_field = State()
     edit_checklist = State()
+    admin_wait_password = State()
 
 # ---------- Premium helpers ----------
 def is_premium(user_id: int) -> bool:
@@ -586,6 +702,21 @@ async def start(message: types.Message):
 @dp.message(F.text.regexp(r"Экспорт|Export"))
 async def export_start(message: types.Message):
     user_id = message.from_user.id
+    # region agent log
+    try:
+        with open("debug-ba46ab.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({
+                "sessionId": "ba46ab",
+                "runId": "initial",
+                "hypothesisId": "H1",
+                "location": "bot(3).py:587",
+                "message": "export_start_entered",
+                "data": {"user_id": user_id, "text": message.text},
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }) + "\n")
+    except Exception:
+        pass
+    # endregion
     db.cursor.execute("SELECT id, name FROM accounts WHERE user_id=?", (user_id,))
     accs = db.cursor.fetchall()
     if not accs:
@@ -600,6 +731,21 @@ async def export_start(message: types.Message):
 @dp.message(F.text.regexp(r"Мои сделки|My Trades") & ~F.text.regexp(r"Экспорт|Export"))
 async def trades_menu(message: types.Message):
     user_id = message.from_user.id
+    # region agent log
+    try:
+        with open("debug-ba46ab.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({
+                "sessionId": "ba46ab",
+                "runId": "initial",
+                "hypothesisId": "H1",
+                "location": "bot(3).py:601",
+                "message": "trades_menu_entered",
+                "data": {"user_id": user_id, "text": message.text},
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }) + "\n")
+    except Exception:
+        pass
+    # endregion
     if not can_add_trade(user_id):
         await message.answer(get_text(user_id, "limit"))
         return
@@ -1178,30 +1324,64 @@ async def list_acc(call: types.CallbackQuery):
 @dp.message(F.text.regexp(r"📈|Analytics"))
 async def analytics(message: types.Message):
     user_id = message.from_user.id
+    # region agent log
     try:
-        db.cursor.execute("SELECT COUNT(*) FROM trades WHERE user_id=?", (user_id,))
-        total = db.cursor.fetchone()[0]
-        db.cursor.execute("SELECT COUNT(*) FROM trades WHERE user_id=? AND status='PROFIT'", (user_id,))
-        wins = db.cursor.fetchone()[0]
-        db.cursor.execute("SELECT COUNT(*) FROM trades WHERE user_id=? AND status='LOSS'", (user_id,))
-        losses = db.cursor.fetchone()[0]
+        with open("debug-ba46ab.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({
+                "sessionId": "ba46ab",
+                "runId": "initial",
+                "hypothesisId": "H2",
+                "location": "bot(3).py:1179",
+                "message": "analytics_entered",
+                "data": {"user_id": user_id, "text": message.text},
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }) + "\n")
     except Exception:
-        logger.exception("analytics failed")
-        total = wins = losses = 0
+        pass
+    # endregion
+    stats = calculate_full_stats(user_id)
+    if not stats:
+        await message.answer(get_text(user_id, "no_trades"), reply_markup=main_menu(user_id))
+        return
 
-    wr = (wins / total * 100) if total > 0 else 0
-    text = f"""{get_text(user_id, 'analytics')}
-
-🧾 {get_text(user_id, 'all_trades')}: {total}
-🏆 {get_text(user_id, 'profit')}: {wins}
-🧨 {get_text(user_id, 'loss')}: {losses}
-🎯 Win Rate: {wr:.1f}%"""
+    text = (
+        f"{get_text(user_id, 'analytics')}\n\n"
+        f"🧾 {get_text(user_id, 'all_trades')}: {stats['total']}\n"
+        f"🏆 {get_text(user_id, 'profit')}: {stats['profitable']}\n"
+        f"🧨 {get_text(user_id, 'loss')}: {stats['losing']}\n"
+        f"🎯 Win Rate: {stats['win_rate']:.1f}%\n\n"
+        f"💼 {get_text(user_id, 'total_pnl_label')}: {stats['total_pnl']}\n"
+        f"📊 {get_text(user_id, 'avg_trade_label')}: {stats['avg_trade']}\n"
+        f"🚀 {get_text(user_id, 'best_trade_label')}: {stats['best_trade']}\n"
+        f"📉 {get_text(user_id, 'worst_trade_label')}: {stats['worst_trade']}\n\n"
+        f"📏 {get_text(user_id, 'risk_section')}\n"
+        f"⚖️ {get_text(user_id, 'rr_label')}: {stats['avg_rr']}\n"
+        f"🔥 {get_text(user_id, 'avg_risk_label')}: {stats['avg_risk']}\n"
+        f"📉 {get_text(user_id, 'max_dd_label')}: {stats['max_drawdown']}\n"
+        f"🏅 {get_text(user_id, 'win_streak_label')}: {stats['win_streak']}\n"
+        f"💣 {get_text(user_id, 'loss_streak_label')}: {stats['loss_streak']}"
+    )
     await message.answer(text, reply_markup=main_menu(user_id))
 
 # ===== EXPORT (callback выбора счёта и отправка файла) =====
 @dp.callback_query(F.data.startswith("expacct_"))
 async def export_do(call: types.CallbackQuery):
     user_id = call.from_user.id
+    # region agent log
+    try:
+        with open("debug-ba46ab.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({
+                "sessionId": "ba46ab",
+                "runId": "initial",
+                "hypothesisId": "H1",
+                "location": "bot(3).py:1203",
+                "message": "export_do_entered",
+                "data": {"user_id": user_id, "data": call.data},
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }) + "\n")
+    except Exception:
+        pass
+    # endregion
     try:
         aid = int(call.data.split("_")[1])
     except Exception:
@@ -1460,6 +1640,24 @@ async def cmd_grant_manual(message: types.Message):
 async def admin_login(message: types.Message):
     """Вход по паролю: даёт безлимит (премиум) за счёт users.is_premium / premium_until."""
     parts = message.text.split()
+    # region agent log
+    try:
+        with open("debug-ba46ab.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({
+                "sessionId": "ba46ab",
+                "runId": "initial",
+                "hypothesisId": "H3",
+                "location": "bot(3).py:1460",
+                "message": "admin_login_called",
+                "data": {
+                    "user_id": message.from_user.id,
+                    "parts_len": len(parts)
+                },
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }) + "\n")
+    except Exception:
+        pass
+    # endregion
     if len(parts) < 2:
         await message.answer("Использование: /admin пароль")
         return
@@ -1612,6 +1810,7 @@ if __name__ == "__main__":
         logger.error("BOT_TOKEN not set!")
         exit(1)
     web.run_app(app, port=PORT, host="0.0.0.0")
+
 
 
 
