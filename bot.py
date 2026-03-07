@@ -19,8 +19,6 @@ Trader's Journal - complete ready-to-run bot.py
 4. Исправлена инициализация bot (проверка TOKEN)
 5. Все функции и обработчики сохранены полностью
 """
-import asyncio
-import sqlite3
 import logging
 import os
 import json
@@ -101,33 +99,13 @@ PORT = int(os.environ.get("PORT", 8000))
 bot = Bot(token=TOKEN) if TOKEN else None
 dp = Dispatcher(storage=MemoryStorage())
 
-# ---------- Database ----------
-def init_db():
-    conn = sqlite3.connect("trades.db")
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        date TEXT,
-        pair TEXT,
-        entry REAL,
-        exit REAL,
-        profit REAL
-    )
-    """)
-    conn.commit()
-    conn.close()
-
-init_db()
-
+# ---------- Database (сделки считаем из основной БД db) ----------
 def count_user_trades(user_id):
-    conn = sqlite3.connect("trades.db")
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM trades WHERE user_id=?", (user_id,))
-    count = cur.fetchone()[0]
-    conn.close()
-    return count
+    try:
+        db.cursor.execute("SELECT COUNT(*) FROM trades WHERE user_id=?", (user_id,))
+        return db.cursor.fetchone()[0]
+    except Exception:
+        return 0
 
 # ---------- Subscriptions ----------
 SUBS_FILE = "subscriptions.json"
@@ -160,16 +138,16 @@ async def check_free_trades_limit(user_id: int, message: types.Message) -> bool:
 
 
 def calculate_stats(user_id: int):
-    conn = sqlite3.connect("trades.db")
-    cur = conn.cursor()
-    cur.execute("SELECT profit FROM trades WHERE user_id=?", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-
+    try:
+        db.cursor.execute("SELECT pnl FROM trades WHERE user_id=?", (user_id,))
+        rows = db.cursor.fetchall()
+    except Exception:
+        return None
     if not rows:
         return None
-
-    profits = [r[0] for r in rows]
+    profits = [float(r[0]) for r in rows if r[0] is not None]
+    if not profits:
+        return None
     total = len(profits)
     wins = [p for p in profits if p > 0]
     losses = [p for p in profits if p < 0]
@@ -190,21 +168,22 @@ def calculate_stats(user_id: int):
 
 
 def create_excel(user_id: int):
-    conn = sqlite3.connect("trades.db")
-    cur = conn.cursor()
-    cur.execute("SELECT date, pair, entry, exit, profit FROM trades WHERE user_id=?", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-
+    try:
+        db.cursor.execute(
+            "SELECT open_date, close_date, pair, trade_type, amount, take_profit, status, pnl FROM trades WHERE user_id=? ORDER BY created_at",
+            (user_id,),
+        )
+        rows = db.cursor.fetchall()
+    except Exception:
+        return None
     if not rows:
         return None
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Trades"
-    ws.append(["Дата", "Пара", "Вход", "Выход", "Прибыль"])
+    ws.append(["Вход", "Выход", "Пара", "Тип", "Сумма", "TP", "Статус", "P/L"])
     for r in rows:
-        ws.append(r)
+        ws.append(list(r))
 
     path = f"exports/{user_id}_trades.xlsx"
     Path("exports").mkdir(exist_ok=True)
@@ -213,17 +192,24 @@ def create_excel(user_id: int):
 
 
 def create_equity_chart(user_id: int):
-    conn = sqlite3.connect("trades.db")
-    cur = conn.cursor()
-    cur.execute("SELECT date, profit FROM trades WHERE user_id=? ORDER BY date", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-
+    try:
+        db.cursor.execute("SELECT open_date, pnl FROM trades WHERE user_id=? ORDER BY open_date", (user_id,))
+        rows = db.cursor.fetchall()
+    except Exception:
+        return None
     if not rows:
         return None
-
-    dates = [datetime.fromisoformat(r[0]) for r in rows]
-    profits = [r[1] for r in rows]
+    dates = []
+    profits = []
+    for r in rows:
+        if r[0] and r[1] is not None:
+            try:
+                dates.append(datetime.fromisoformat(r[0]) if "T" not in str(r[0]) else datetime.fromisoformat(str(r[0])[:10]))
+            except Exception:
+                dates.append(datetime.now())
+            profits.append(float(r[1]))
+    if not dates or not profits:
+        return None
     equity = []
     total = 0
     for p in profits:
@@ -244,8 +230,8 @@ def create_equity_chart(user_id: int):
 
 
 async def check_free_trades(user_id: int, message: types.Message) -> bool:
-    if count_user_trades(user_id) >= MAX_TRADES_FREE:
-        trades = await db.count_user_trades(user_id)
+    """Проверяет, может ли пользователь добавить сделку (премиум или лимит не достигнут)."""
+    if not can_add_trade(user_id):
         await message.answer(
             "Вы достигли лимита бесплатных сделок.\n\n"
             "Чтобы продолжить, купите подписку."
@@ -257,19 +243,19 @@ async def check_free_trades(user_id: int, message: types.Message) -> bool:
 # ---------- Localization ----------
 LANG = {
     "ru": {
-        "start": "📱 ДНЕВНИК ТРЕЙДЕРА\n\n✓ Добавляйте сделки (LONG/SHORT)\n✓ Полная аналитика\n✓ Чеклисты с условиями\n✓ Экспорт в Excel\n✓ Календарь для дат\n✓ До {} сделок бесплатно\n\nВыберите действие:".format(MAX_TRADES_FREE),
-        "my_trades": "📊 Мои сделки",
-        "new_trade": "➕ Новая сделка",
-        "history": "📋 История",
-        "edit": "✏️ Изменить",
+        "start": "🧭 ДНЕВНИК ТРЕЙДЕРА\n\n✓ Добавляйте сделки (LONG/SHORT)\n✓ Полная аналитика\n✓ Чеклисты с условиями\n✓ Экспорт в Excel\n✓ Календарь для дат\n✓ До {} сделок бесплатно\n\nВыберите действие:".format(MAX_TRADES_FREE),
+        "my_trades": "📒 Мои сделки",
+        "new_trade": "📝 Новая сделка",
+        "history": "🕓 История",
+        "edit": "✍️ Изменить",
         "delete": "🗑 Удалить",
-        "accounts": "💼 Счет",
-        "create_acc": "➕ Создать",
-        "list_acc": "📋 Список",
+        "accounts": "🏦 Счет",
+        "create_acc": "🆕 Создать",
+        "list_acc": "📜 Список",
         "analytics": "📈 Аналитика",
-        "export": "📊 Экспорт",
-        "help": "❓ Помощь",
-        "settings": "⚙️ Настройки",
+        "export": "📤 Экспорт",
+        "help": "🆘 Помощь",
+        "settings": "🧰 Настройки",
         "select_account": "Выберите счет:",
         "select_pair": "Выберите пару:",
         "select_type": "Выберите тип:",
@@ -307,15 +293,15 @@ LANG = {
         "limit": "⚠️ Лимит {} сделок! Получите премиум".format(MAX_TRADES_FREE),
         "no_account": "Сначала создайте счет!",
         "select_account_export": "Выберите счет для экспорта:",
-        "sent": "✓ Отправлено!",
+        "sent": "📩 Отправлено!",
         "acc_name": "Название:",
         "acc_balance": "Баланс:",
-        "acc_created": "✓ Счет создан",
+        "acc_created": "🎉 Счет создан",
         "all_trades": "ВСЕ СДЕЛКИ:",
         "analytics_text": "АНАЛИТИКА\n\nВсего: {}\nВыигрышей: {}\nПроигрышей: {}\nWin Rate: {:.1f}%",
-        "language": "🌐 Выбрать язык",
+        "language": "🌍 Выбрать язык",
         "current_lang": "Текущий язык: ",
-        "profile": "👤 ПРОФИЛЬ",
+        "profile": "🧑‍💼 ПРОФИЛЬ",
         "id": "ID: ",
         "username": "Username: @",
         "trades_count": "Сделок: ",
@@ -330,8 +316,8 @@ LANG = {
         "plan_2": "2 USD / 30 days",
         "plan_5": "5 USD / 90 days",
         "subscribe_btn": "Подписаться",
-        "grant_success": "✅ Премиум выдан на {} дней",
-        "not_admin": "❌ Только администратор может выполнить это действие",
+        "grant_success": "⭐ Премиум выдан на {} дней",
+        "not_admin": "⛔ Только администратор может выполнить это действие",
         "today": "Сегодня",
         "yesterday": "Вчера",
         "templates": "Шаблоны чеклистов",
@@ -340,19 +326,19 @@ LANG = {
         "no_templates": "Нет шаблонов",
     },
     "en": {
-        "start": "📱 TRADER'S JOURNAL\n\n✓ Add trades (LONG/SHORT)\n✓ Full analytics\n✓ Trading checklists\n✓ Export to Excel\n✓ Calendar for dates\n✓ Up to {} trades free\n\nSelect action:".format(MAX_TRADES_FREE),
-        "my_trades": "📊 My Trades",
-        "new_trade": "➕ New Trade",
-        "history": "📋 History",
-        "edit": "✏️ Edit",
+        "start": "🧭 TRADER'S JOURNAL\n\n✓ Add trades (LONG/SHORT)\n✓ Full analytics\n✓ Trading checklists\n✓ Export to Excel\n✓ Calendar for dates\n✓ Up to {} trades free\n\nSelect action:".format(MAX_TRADES_FREE),
+        "my_trades": "📒 My Trades",
+        "new_trade": "📝 New Trade",
+        "history": "🕓 History",
+        "edit": "✍️ Edit",
         "delete": "🗑 Delete",
-        "accounts": "💼 Accounts",
-        "create_acc": "➕ Create",
-        "list_acc": "📋 List",
+        "accounts": "🏦 Accounts",
+        "create_acc": "🆕 Create",
+        "list_acc": "📜 List",
         "analytics": "📈 Analytics",
-        "export": " Export",
-        "help": "❓ Help",
-        "settings": "⚙️ Settings",
+        "export": "📤 Export",
+        "help": "🆘 Help",
+        "settings": "🧰 Settings",
         "select_account": "Select account:",
         "select_pair": "Select pair:",
         "select_type": "Select type:",
@@ -390,15 +376,15 @@ LANG = {
         "limit": "⚠️ Limit {} trades! Get premium".format(MAX_TRADES_FREE),
         "no_account": "Create account first!",
         "select_account_export": "Select account to export:",
-        "sent": "✓ Sent!",
+        "sent": "📩 Sent!",
         "acc_name": "Name:",
         "acc_balance": "Balance:",
-        "acc_created": "✓ Account created",
+        "acc_created": "🎉 Account created",
         "all_trades": "ALL TRADES:",
         "analytics_text": "ANALYTICS\n\nTotal: {}\nWins: {}\nLosses: {}\nWin Rate: {:.1f}%",
-        "language": "🌐 Select language",
+        "language": "🌍 Select language",
         "current_lang": "Current language: ",
-        "profile": "👤 PROFILE",
+        "profile": "🧑‍💼 PROFILE",
         "id": "ID: ",
         "username": "Username: @",
         "trades_count": "Trades: ",
@@ -413,8 +399,8 @@ LANG = {
         "plan_2": "2 USD / 30 days",
         "plan_5": "5 USD / 90 days",
         "subscribe_btn": "Subscribe",
-        "grant_success": "✅ Premium granted for {} days",
-        "not_admin": "❌ Only admin can perform this action",
+        "grant_success": "⭐ Premium granted for {} days",
+        "not_admin": "⛔ Only admin can perform this action",
         "today": "Today",
         "yesterday": "Yesterday",
         "templates": "Checklist templates",
@@ -513,6 +499,19 @@ def revoke_premium(user_id: int):
         logger.exception("revoke_premium failed")
 
 # ---------- UI helpers ----------
+# Тексты кнопок главного меню (чтобы при нажатии в процессе ввода сбрасывать состояние)
+MENU_BUTTON_MARKERS = (
+    "Мои сделки", "My Trades", "Счет", "Accounts", "Аналитика", "Analytics",
+    "Экспорт", "Export", "Помощь", "Help", "Настройки", "Settings",
+)
+
+def is_main_menu_button(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+    return any(m in t for m in MENU_BUTTON_MARKERS)
+
+
 def main_menu(user_id: int):
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text=get_text(user_id, "my_trades")), KeyboardButton(text=get_text(user_id, "accounts"))],
@@ -570,8 +569,11 @@ def calendar_kb(year: int, month: int, user_id: int):
 async def start(message: types.Message):
     user_id = message.from_user.id
     try:
-        db.cursor.execute("INSERT OR REPLACE INTO users(user_id, username, first_name) VALUES(?, ?, ?)",
-                          (user_id, message.from_user.username or "user", message.from_user.first_name or "User"))
+        db.cursor.execute(
+            """INSERT INTO users(user_id, username, first_name) VALUES(?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name""",
+            (user_id, message.from_user.username or "user", message.from_user.first_name or "User"),
+        )
         if user_id == ADMIN_ID and ADMIN_ID != 0:
             db.cursor.execute("UPDATE users SET is_admin=1 WHERE user_id=?", (user_id,))
         db.commit()
@@ -580,11 +582,27 @@ async def start(message: types.Message):
     await message.answer(get_text(user_id, "start"), reply_markup=main_menu(user_id))
 
 
-@dp.message(F.text.regexp(r"📊|My Trades"))
+# ===== EXPORT (регистрируем первым, чтобы «📊 Экспорт» не попадал в «Мои сделки») =====
+@dp.message(F.text.regexp(r"Экспорт|Export"))
+async def export_start(message: types.Message):
+    user_id = message.from_user.id
+    db.cursor.execute("SELECT id, name FROM accounts WHERE user_id=?", (user_id,))
+    accs = db.cursor.fetchall()
+    if not accs:
+        await message.answer(get_text(user_id, "no_account"))
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📄 {name}", callback_data=f"expacct_{aid}")] for aid, name in accs
+    ])
+    await message.answer(get_text(user_id, "select_account_export"), reply_markup=kb)
+
+
+@dp.message(F.text.regexp(r"Мои сделки|My Trades") & ~F.text.regexp(r"Экспорт|Export"))
 async def trades_menu(message: types.Message):
     user_id = message.from_user.id
     if not can_add_trade(user_id):
         await message.answer(get_text(user_id, "limit"))
+        return
     try:
         db.cursor.execute("SELECT COUNT(*) FROM trades WHERE user_id=?", (user_id,))
         count = db.cursor.fetchone()[0]
@@ -596,7 +614,7 @@ async def trades_menu(message: types.Message):
         [InlineKeyboardButton(text=get_text(user_id, "edit"), callback_data="edit_trades")],
         [InlineKeyboardButton(text=get_text(user_id, "delete"), callback_data="del_trades")],
     ])
-    await message.answer(f"📊 {get_text(user_id, 'my_trades')} ({count}):", reply_markup=kb)
+    await message.answer(f"{get_text(user_id, 'my_trades')} ({count}):", reply_markup=kb)
 
 @dp.callback_query(F.data == "new_trade")
 async def new_trade(call: types.CallbackQuery, state: FSMContext):
@@ -609,7 +627,7 @@ async def new_trade(call: types.CallbackQuery, state: FSMContext):
     if not accounts:
         await call.answer(get_text(user_id, "no_account"))
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"💼 {n}", callback_data=f"acc_{i}")] for i, n in accounts])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🏦 {n}", callback_data=f"acc_{i}")] for i, n in accounts])
     await call.message.edit_text(f"👇 {get_text(user_id, 'select_account')}", reply_markup=kb)
     await state.set_state(States.trade_step_1)
     await call.answer()
@@ -708,6 +726,14 @@ async def select_dt(call: types.CallbackQuery, state: FSMContext):
 @dp.message(States.trade_step_6)
 async def step_6(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and message.text.strip().startswith("/"):
+        await state.clear()
+        await message.answer("Действие отменено.")
+        return
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     try:
         val = float(message.text)
         await state.update_data(amount=val)
@@ -719,6 +745,14 @@ async def step_6(message: types.Message, state: FSMContext):
 @dp.message(States.trade_step_7)
 async def step_7(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and message.text.strip().startswith("/"):
+        await state.clear()
+        await message.answer("Действие отменено.")
+        return
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     try:
         val = float(message.text)
         await state.update_data(take_profit=val)
@@ -745,6 +779,10 @@ async def select_st(call: types.CallbackQuery, state: FSMContext):
 @dp.message(States.trade_step_9)
 async def step_9(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     await state.update_data(strategy=message.text)
     await message.answer(f"9️⃣ {get_text(user_id, 'checklist')}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=get_text(user_id, "create_checklist"), callback_data="create_check")],
@@ -763,6 +801,10 @@ async def create_check(call: types.CallbackQuery, state: FSMContext):
 @dp.message(States.trade_step_10)
 async def step_10(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     items = [i.strip().lstrip("-").strip() for i in message.text.strip().split("\n") if i.strip()]
     checklist = {item: False for item in items}
     fn = f"trade_checklists/{message.from_user.id}_{int(datetime.now().timestamp())}.json"
@@ -780,6 +822,10 @@ async def step_10(message: types.Message, state: FSMContext):
 @dp.message(States.trade_step_11)
 async def step_11(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     await state.update_data(notes=message.text)
     await message.answer(f"1️⃣1️⃣ {get_text(user_id, 'select_screenshot')}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=get_text(user_id, "skip"), callback_data="skip")]]))
     await state.set_state(States.trade_step_12)
@@ -787,10 +833,11 @@ async def step_11(message: types.Message, state: FSMContext):
 @dp.message(States.trade_step_12)
 async def step_12(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    if message.photo:
+    if message.photo and bot:
         photo = message.photo[-1]
         try:
             fp = await bot.get_file(photo.file_id)
+            Path("trade_photos").mkdir(exist_ok=True)
             fn = f"trade_photos/{message.from_user.id}_{int(datetime.now().timestamp())}.jpg"
             await bot.download_file(fp.file_path, fn)
             await state.update_data(screenshot_path=fn)
@@ -1002,6 +1049,14 @@ async def ed_f(call: types.CallbackQuery, state: FSMContext):
 @dp.message(States.edit_field)
 async def save_edit(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and message.text.strip().startswith("/"):
+        await state.clear()
+        await message.answer("Действие отменено.")
+        return
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     data = await state.get_data()
     tid = data.get("trade_id")
     field = data.get("field")
@@ -1018,7 +1073,7 @@ async def save_edit(message: types.Message, state: FSMContext):
             await message.answer(f"❌ {get_text(user_id, 'new_value')}")
             return
     try:
-        db.cursor.execute(f"UPDATE trades SET {field}=? WHERE id=? AND user_id=?", (value, tid, user_id))
+        db.cursor.execute("UPDATE trades SET " + field + "=? WHERE id=? AND user_id=?", (value, tid, user_id))
         db.commit()
         await state.clear()
         await message.answer(f"✅ {get_text(user_id, 'saved')}")
@@ -1028,14 +1083,14 @@ async def save_edit(message: types.Message, state: FSMContext):
 
 # ===== ACCOUNTS HANDLERS =====
 
-@dp.message(F.text.regexp(r"💼|Accounts"))
+@dp.message(F.text.regexp(r"🏦|Счет|Accounts"))
 async def accounts(message: types.Message):
     user_id = message.from_user.id
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=get_text(user_id, "create_acc"), callback_data="new_acc")],
         [InlineKeyboardButton(text=get_text(user_id, "list_acc"), callback_data="list_acc")],
     ])
-    await message.answer(f"💼 {get_text(user_id, 'accounts')}:", reply_markup=kb)
+    await message.answer(f"{get_text(user_id, 'accounts')}:", reply_markup=kb)
 
 @dp.callback_query(F.data == "new_acc")
 async def new_acc(call: types.CallbackQuery, state: FSMContext):
@@ -1047,24 +1102,62 @@ async def new_acc(call: types.CallbackQuery, state: FSMContext):
 @dp.message(States.add_account_name)
 async def acc_name(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and message.text.strip().startswith("/"):
+        await state.clear()
+        await message.answer("Действие отменено. Для входа админа: /admin ваш_пароль")
+        return
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     await state.update_data(name=message.text)
     await message.answer(get_text(user_id, "acc_balance"))
     await state.set_state(States.add_account_balance)
 
+def _parse_balance(text: str):
+    """Принимает '25000', '25 000', '25,5' и т.п."""
+    if not text or not text.strip():
+        raise ValueError("empty")
+    s = text.strip().replace(" ", "").replace(",", ".")
+    return float(s)
+
+
 @dp.message(States.add_account_balance)
 async def acc_balance(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if message.text and message.text.strip().startswith("/"):
+        await state.clear()
+        await message.answer("Действие отменено. Для входа админа: /admin ваш_пароль")
+        return
+    if message.text and is_main_menu_button(message.text):
+        await state.clear()
+        await message.answer("Действие отменено. Нажмите нужную кнопку меню ещё раз.", reply_markup=main_menu(user_id))
+        return
     data = await state.get_data()
+    name = data.get("name")
+    if not name:
+        await message.answer("❌ Не найдено название счёта. Введите название снова:")
+        await state.set_state(States.add_account_name)
+        return
     try:
-        bal = float(message.text)
-        db.cursor.execute("INSERT INTO accounts(user_id, name, initial_balance, current_balance) VALUES(?, ?, ?, ?)",
-            (user_id, data["name"], bal, bal))
+        bal = _parse_balance(message.text)
+    except ValueError:
+        await message.answer("❌ Введите число — баланс счёта (например: 25000 или 25 000):")
+        return
+    if bal < 0:
+        await message.answer("❌ Баланс не может быть отрицательным. Введите положительное число:")
+        return
+    try:
+        db.cursor.execute(
+            "INSERT INTO accounts(user_id, name, initial_balance, current_balance) VALUES(?, ?, ?, ?)",
+            (user_id, name, bal, bal),
+        )
         db.commit()
         await state.clear()
         await message.answer(get_text(user_id, "acc_created"))
     except Exception:
         logger.exception("acc_balance failed")
-        await message.answer(f"❌ {get_text(user_id, 'new_value')}")
+        await message.answer("❌ Ошибка сохранения счёта. Попробуйте позже или обратитесь в поддержку.")
 
 @dp.callback_query(F.data == "list_acc")
 async def list_acc(call: types.CallbackQuery):
@@ -1072,11 +1165,11 @@ async def list_acc(call: types.CallbackQuery):
     db.cursor.execute("SELECT name, initial_balance, current_balance FROM accounts WHERE user_id=?", (user_id,))
     accs = db.cursor.fetchall()
     if not accs:
-        await call.message.edit_text(get_text(user_id, "no_trades"))
+        await call.message.edit_text(get_text(user_id, "no_account"))
     else:
-        text = f"💼 {get_text(user_id, 'accounts')}:\n\n"
+        text = f"{get_text(user_id, 'accounts')}:\n\n"
         for n, ini, cur in accs:
-            text += f"📊 {n}\n🔷 {get_text(user_id, 'acc_balance')}: {ini}\n🔶 {get_text(user_id, 'current')}: {cur}\n\n"
+            text += f"🏦 {n}\n🔷 {get_text(user_id, 'acc_balance')}: {ini}\n🔶 {get_text(user_id, 'current')}: {cur}\n\n"
         await call.message.edit_text(text)
     await call.answer()
 
@@ -1095,30 +1188,17 @@ async def analytics(message: types.Message):
     except Exception:
         logger.exception("analytics failed")
         total = wins = losses = 0
-    wr = (wins / total * 100) if total > 0 else 0
-    text = f"""📈 {get_text(user_id, 'analytics')}
 
-📊 {get_text(user_id, 'all_trades')}: {total}
-✅ {get_text(user_id, 'profit')}: {wins}
-❌ {get_text(user_id, 'loss')}: {losses}
+    wr = (wins / total * 100) if total > 0 else 0
+    text = f"""{get_text(user_id, 'analytics')}
+
+🧾 {get_text(user_id, 'all_trades')}: {total}
+🏆 {get_text(user_id, 'profit')}: {wins}
+🧨 {get_text(user_id, 'loss')}: {losses}
 🎯 Win Rate: {wr:.1f}%"""
     await message.answer(text, reply_markup=main_menu(user_id))
 
-# ===== EXPORT HANDLERS =====
-
-@dp.message(F.text == "📊 Экспорт")
-async def export_start(message: types.Message):
-    user_id = message.from_user.id
-    db.cursor.execute("SELECT id, name FROM accounts WHERE user_id=?", (user_id,))
-    accs = db.cursor.fetchall()
-    if not accs:
-        await message.answer(get_text(user_id, "no_account"))
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📄 {name}", callback_data=f"expacct_{aid}")] for aid, name in accs
-    ])
-    await message.answer(get_text(user_id, "select_account_export"), reply_markup=kb)
-
+# ===== EXPORT (callback выбора счёта и отправка файла) =====
 @dp.callback_query(F.data.startswith("expacct_"))
 async def export_do(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -1127,25 +1207,44 @@ async def export_do(call: types.CallbackQuery):
     except Exception:
         await call.answer()
         return
-    db.cursor.execute("SELECT pair, trade_type, open_date, close_date, amount, take_profit, status, strategy, notes FROM trades WHERE user_id=? AND account_id=?", (user_id, aid))
+    db.cursor.execute(
+        "SELECT name FROM accounts WHERE id=? AND user_id=?", (aid, user_id)
+    )
+    acc_row = db.cursor.fetchone()
+    account_name = acc_row[0] if acc_row else f"Account_{aid}"
+    db.cursor.execute(
+        """SELECT pair, trade_type, open_date, close_date, amount, take_profit, status, strategy, notes, pnl, created_at
+           FROM trades WHERE user_id=? AND account_id=? ORDER BY created_at""",
+        (user_id, aid),
+    )
     trades = db.cursor.fetchall()
-    if not trades:
-        await call.answer(get_text(user_id, "no_trades"))
-        return
+    Path("exports").mkdir(exist_ok=True)
     wb = Workbook()
     ws = wb.active
-    ws.append(["Пара/Pair", "Тип/Type", "Вход/Entry", "Выход/Exit", "Сумма/Amount", "TP", "Статус/Status", "Стратегия/Strategy", "Заметки/Notes"])
+    ws.title = account_name[:31]
+    headers = [
+        "Пара", "Тип", "Дата входа", "Дата выхода", "Сумма", "TP", "Статус",
+        "Стратегия", "Заметки", "P/L", "Создано",
+    ]
+    ws.append(headers)
     for row in trades:
-        ws.append(row)
+        ws.append(list(row))
     fn = f"exports/trades_{user_id}_{aid}_{int(datetime.now().timestamp())}.xlsx"
     try:
         wb.save(fn)
-        await bot.send_document(user_id, FSInputFile(fn), caption="✅ Your trades")
+        if bot:
+            caption = f"✅ Сделки по счёту «{account_name}» — {len(trades)} записей. Скачайте файл."
+            await bot.send_document(
+                call.from_user.id,
+                FSInputFile(fn),
+                caption=caption,
+            )
         Path(fn).unlink(missing_ok=True)
         await call.answer(get_text(user_id, "sent"))
+        await call.message.edit_text(f"✅ {get_text(user_id, 'sent')}")
     except Exception:
         logger.exception("export error")
-        await call.answer("❌ Error generating export")
+        await call.answer("❌ Ошибка при создании файла")
 
 # ===== STATS COMMAND =====
 
@@ -1193,7 +1292,7 @@ async def equity_cmd(message: types.Message):
 
 # ===== HELP HANDLER =====
 
-@dp.message(F.text.regexp(r"❓|Help"))
+@dp.message(F.text.regexp(r"🆘|Помощь|Help"))
 async def help_cmd(message: types.Message):
     user_id = message.from_user.id
     text = """
@@ -1202,7 +1301,7 @@ async def help_cmd(message: types.Message):
 ➕ Новая сделка
 Добавляет новую торговую сделку.
 
-📊 Мои сделки
+📒 Мои сделки
 Просмотр всех сделок.
 
 📈 Аналитика
@@ -1211,10 +1310,10 @@ async def help_cmd(message: types.Message):
 • winrate
 • profit factor
 
-📊 Экспорт
+📤 Экспорт
 Скачивает Excel файл со всеми сделками.
 
-💼 Счета
+🏦 Счета
 Управление торговыми счетами.
 
 💳 Подписка
@@ -1230,14 +1329,14 @@ async def help_cmd(message: types.Message):
 
 # ===== SETTINGS HANDLER =====
 
-@dp.message(F.text.regexp(r"⚙️|Settings"))
+@dp.message(F.text.regexp(r"🧰|Настройки|Settings"))
 async def settings(message: types.Message):
     user_id = message.from_user.id
     db.cursor.execute("SELECT username, total_trades, language FROM users WHERE user_id=?", (user_id,))
     res = db.cursor.fetchone()
     if res:
         lang_text = "🇷🇺 Русский" if res[2] == "ru" else "🇬🇧 English"
-        text = f"""⚙️ {get_text(user_id, 'settings')}
+        text = f"""{get_text(user_id, 'settings')}
 
 {get_text(user_id, 'id')}{user_id}
 {get_text(user_id, 'username')}{res[0]}
@@ -1359,28 +1458,39 @@ async def cmd_grant_manual(message: types.Message):
 
 @dp.message(Command("admin"))
 async def admin_login(message: types.Message):
-
+    """Вход по паролю: даёт безлимит (премиум) за счёт users.is_premium / premium_until."""
     parts = message.text.split()
-
     if len(parts) < 2:
         await message.answer("Использование: /admin пароль")
         return
-
-    password = parts[1]
-
+    password = parts[1].strip()
     if password != ADMIN_PASSWORD:
         await message.answer("Неверный пароль")
         return
-
     user_id = message.from_user.id
-
-    db.cursor.execute(
-        "INSERT OR REPLACE INTO subscriptions (user_id, expires_at) VALUES (?, ?)",
-        (user_id, "2099-01-01")
-    )
-    db.conn.commit()
-
-    await message.answer("Админ доступ активирован")
+    try:
+        # Лимит проверяется по users.is_premium и users.premium_until — обновляем их
+        period_end = "2099-12-31T23:59:59"
+        db.cursor.execute(
+            "UPDATE users SET is_premium=1, premium_until=? WHERE user_id=?",
+            (period_end, user_id),
+        )
+        if db.cursor.rowcount == 0:
+            # Пользователя ещё нет в users — создаём и даём премиум
+            db.cursor.execute(
+                """INSERT INTO users(user_id, username, first_name, is_premium, premium_until)
+                   VALUES(?, ?, ?, 1, ?)""",
+                (user_id, message.from_user.username or "", message.from_user.first_name or "User", period_end),
+            )
+        db.cursor.execute(
+            "INSERT INTO subscriptions(user_id, provider, provider_id, status, period_end) VALUES(?, ?, ?, ?, ?)",
+            (user_id, "admin_login", "", "active", period_end),
+        )
+        db.commit()
+        await message.answer("✅ Админ-доступ активирован. Безлимитные сделки включены.")
+    except Exception:
+        logger.exception("admin_login failed")
+        await message.answer("❌ Ошибка при активации. Попробуйте позже.")
 
 # ===== CHECKLIST TEMPLATES HANDLERS =====
 
@@ -1410,7 +1520,11 @@ async def apply_template(call: types.CallbackQuery, state: FSMContext):
         with open(fn, "w", encoding="utf-8") as f:
             json.dump(tpl, f, ensure_ascii=False, indent=2)
         await state.update_data(checklist=fn)
-        await call.message.edit_text("Template applied. Continue creating trade.")
+        await call.message.edit_text(
+            f"🔟 {get_text(user_id, 'enter_notes')}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=get_text(user_id, "skip"), callback_data="skip")]]),
+        )
+        await state.set_state(States.trade_step_11)
         await call.answer()
     except Exception:
         logger.exception("apply_template error")
