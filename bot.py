@@ -309,6 +309,19 @@ async def handle(request):
     await dp.feed_update(bot, update)
     return web.Response(text="OK")
 
+
+async def run_web():
+    app = web.Application()
+    app.add_routes([web.get("/", handle)])
+    port = int(os.environ.get("PORT", 8000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Listening on port {port}")
+
+
+
 # ---------- Startup ----------
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
