@@ -2,4 +2,5 @@ aiogram
 openpyxl
 aiohttp
 matplotlib
+aiosqlite
 
