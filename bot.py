@@ -36,11 +36,7 @@ from aiogram.types import (
     FSInputFile, LabeledPrice, PreCheckoutQuery
 )
 
-
-
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database.db")
-
-db = Database(db_url=DATABASE_URL)
+db = Database()
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
@@ -222,6 +218,7 @@ def create_equity_chart(user_id: int):
 
 async def check_free_trades(user_id: int, message: types.Message) -> bool:
     if count_user_trades(user_id) >= MAX_TRADES_FREE:
+        trades = await db.count_user_trades(user_id)
         await message.answer(
             "Вы достигли лимита бесплатных сделок.\n\n"
             "Чтобы продолжить, купите подписку."
@@ -236,6 +233,7 @@ async def check_free_trades(user_id: int, message: types.Message) -> bool:
 @dp.message(Command("trade"))
 async def create_trade(message: types.Message):
     user_id = message.from_user.id
+  
 
 
    
@@ -253,6 +251,7 @@ async def create_trade(message: types.Message):
 @dp.message(Command("stats"))
 async def stats_cmd(message: types.Message):
     user_id = message.from_user.id
+      await db.add_user(user_id)
 
     if not await check_free_trades(user_id, message):
         return  # остановка, если лимит бесплатных сделок
@@ -1681,6 +1680,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
