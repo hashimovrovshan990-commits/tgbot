@@ -214,7 +214,7 @@ def create_equity_chart(user_id: int):
     return buf
 
 
- async def check_free_trades(user_id: int, message: types.Message) -> bool:
+async def check_free_trades(user_id: int, message: types.Message) -> bool:
     if count_user_trades(user_id) >= MAX_TRADES_FREE:
         await message.answer(
             "Вы достигли лимита бесплатных сделок.\n\n"
@@ -1662,6 +1662,7 @@ app.router.add_post(WEBHOOK_PATH, handle_update)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, on_startup=[on_startup])
+
 
 
 
