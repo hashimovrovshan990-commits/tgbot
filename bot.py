@@ -44,9 +44,10 @@ if not TOKEN:
 PROVIDER_TOKEN = get_env("PROVIDER_TOKEN", "")
 MAX_TRADES_FREE = int(get_env("MAX_TRADES_FREE", "20"))
 ADMIN_ID = int(get_env("ADMIN_ID", "0"))
-ADMIN_PASSWORD = get_env("ADMIN_PASSWORD")  # теперь без дефолта!
+ADMIN_PASSWORD = get_env("ADMIN_PASSWORD")  # может быть пустой строкой
 if not ADMIN_PASSWORD:
-    raise ValueError("ADMIN_PASSWORD must be set!")
+    await message.answer("Админ-панель не настроена (отсутствует пароль).")
+    return
 
 CURRENCY = "USD"
 WEBHOOK_DOMAIN = get_env("WEBHOOK_DOMAIN", "https://tgbot-ljj1.onrender.com")
@@ -1799,3 +1800,4 @@ app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, host="0.0.0.0")
+
