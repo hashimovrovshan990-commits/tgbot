@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Trader's Journal - улучшенная версия bot.py
-Все рекомендации из анализа учтены.
+Trader's Journal – финальная версия с оплатой в Telegram Stars
+Подписка только по желанию пользователя, без автопродления.
 """
 
 import logging
@@ -41,17 +41,15 @@ TOKEN = get_env("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN must be set!")
 
-PROVIDER_TOKEN = get_env("PROVIDER_TOKEN", "")
 MAX_TRADES_FREE = int(get_env("MAX_TRADES_FREE", "20"))
 ADMIN_ID = int(get_env("ADMIN_ID", "0"))
-ADMIN_PASSWORD = get_env("ADMIN_PASSWORD")  # может быть пустой строкой
-if not ADMIN_PASSWORD:
-    await message.answer("Админ-панель не настроена (отсутствует пароль).")
-    return
+ADMIN_PASSWORD = get_env("ADMIN_PASSWORD")  # может быть пустым, тогда админ-команды не работают
 
-CURRENCY = "USD"
+# Для Stars валюта XTR, provider_token не нужен
+CURRENCY = "XTR"  # только для совместимости, но фактически используем XTR
+
 WEBHOOK_DOMAIN = get_env("WEBHOOK_DOMAIN", "https://tgbot-ljj1.onrender.com")
-WEBHOOK_SECRET = get_env("WEBHOOK_SECRET", "")  # для проверки подписи
+WEBHOOK_SECRET = get_env("WEBHOOK_SECRET", "")
 WEBHOOK_PATH = f"/webhook/{TOKEN}" if TOKEN else "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_DOMAIN}{WEBHOOK_PATH}"
 PORT = int(os.environ.get("PORT", 8000))
@@ -65,7 +63,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== База данных (улучшенный класс) ==========
+# ========== База данных ==========
 class Database:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -75,14 +73,12 @@ class Database:
         self._init_tables()
 
     def _connect(self):
-        """Подключение к SQLite (в будущем можно заменить на PostgreSQL)."""
         import sqlite3
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
 
     def _init_tables(self):
-        """Создание таблиц, если их нет."""
         self.cursor.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -181,7 +177,6 @@ class Database:
             return False
         until = row["premium_until"]
         if not until:
-            # сброс некорректной записи
             self.cursor.execute("UPDATE users SET is_premium=0 WHERE user_id=?", (user_id,))
             self.commit()
             return False
@@ -240,7 +235,6 @@ class Database:
         return dict(row) if row else None
 
     def recalc_account_balance(self, user_id: int, account_id: int):
-        """Пересчитывает current_balance как initial_balance + сумма pnl по сделкам."""
         acc = self.get_account(account_id, user_id)
         if not acc:
             return
@@ -342,22 +336,206 @@ db = Database(DATABASE_URL)
 
 # ========== Вспомогательные функции ==========
 def parse_number(text: str) -> float:
-    """Преобразует строку в число, поддерживая пробелы и запятую как разделитель."""
     if not text or not text.strip():
         raise ValueError("Empty string")
     s = text.strip().replace(" ", "").replace(",", ".")
     return float(s)
 
 def can_add_trade(user_id: int) -> bool:
-    """Проверяет, может ли пользователь добавить новую сделку."""
     if db.is_premium(user_id):
         return True
     return db.count_user_trades(user_id) < MAX_TRADES_FREE
 
 # ========== Локализация ==========
 LANG = {
-    "ru": { ... },  # оставляем без изменений (содержимое такое же, как в исходном коде)
-    "en": { ... }   # полностью сохранено
+    "ru": {
+        "start": "🧭 ДНЕВНИК ТРЕЙДЕРА\n\n✓ Добавляйте сделки (LONG/SHORT)\n✓ Полная аналитика\n✓ Чеклисты с условиями\n✓ Экспорт в Excel\n✓ Календарь для дат\n✓ До {} сделок бесплатно\n\nВыберите действие:".format(MAX_TRADES_FREE),
+        "my_trades": "📒 Мои сделки",
+        "new_trade": "📝 Новая сделка",
+        "history": "🕓 История",
+        "edit": "✍️ Изменить",
+        "delete": "🗑 Удалить",
+        "accounts": "🏦 Счет",
+        "create_acc": "🆕 Создать",
+        "list_acc": "📜 Список",
+        "analytics": "📈 Аналитика",
+        "export": "📤 Экспорт",
+        "help": "🆘 Помощь",
+        "settings": "🧰 Настройки",
+        "select_account": "Выберите счет:",
+        "select_pair": "Выберите пару:",
+        "select_type": "Выберите тип:",
+        "select_date": "Выберите дату:",
+        "enter_sum": "Введите сумму (USD):",
+        "enter_tp": "Введите Тейк-профит (USD):",
+        "select_status": "Выберите статус:",
+        "enter_strategy": "Введите стратегию:",
+        "checklist": "Чеклист:",
+        "enter_notes": "Введите заметки:",
+        "select_screenshot": "Скриншот (пропустить):",
+        "confirm": "✓ ПОДТВЕРЖДЕНИЕ",
+        "save": "✓ Да",
+        "cancel": "✗ Нет",
+        "saved": "✅ Сохранено!",
+        "cancelled": "✗ Отменено",
+        "no_trades": "Нет сделок",
+        "select_field": "Что изменить?",
+        "new_value": "Новое значение:",
+        "deleted": "✓ Удалено",
+        "profit": "В прибыли",
+        "loss": "В убытке",
+        "closed": "Закрыта",
+        "skip": "Пропустить",
+        "create_checklist": "+ Создать",
+        "pair": "Пара",
+        "type": "Тип",
+        "open_date": "Вход",
+        "close_date": "Выход",
+        "amount": "Сумма",
+        "tp": "TP",
+        "status": "Статус",
+        "strategy": "Стратегия",
+        "notes": "Заметки",
+        "limit": "⚠️ Лимит {} сделок! Получите премиум".format(MAX_TRADES_FREE),
+        "no_account": "Сначала создайте счет!",
+        "select_account_export": "Выберите счет для экспорта:",
+        "sent": "📩 Отправлено!",
+        "acc_name": "Название:",
+        "acc_balance": "Баланс:",
+        "acc_created": "🎉 Счет создан",
+        "all_trades": "ВСЕ СДЕЛКИ:",
+        "analytics_text": "АНАЛИТИКА\n\nВсего: {}\nВыигрышей: {}\nПроигрышей: {}\nWin Rate: {:.1f}%",
+        "language": "🌍 Выбрать язык",
+        "current_lang": "Текущий язык: ",
+        "profile": "🧑‍💼 ПРОФИЛЬ",
+        "id": "ID: ",
+        "username": "Username: @",
+        "trades_count": "Сделок: ",
+        "step": "Шаг",
+        "pair_label": "Пара",
+        "type_label": "Тип",
+        "date_label": "Дата",
+        "sum_label": "Сумма",
+        "current": "Текущий баланс:",
+        "subscribe": "💳 Подписка",
+        "subscribe_info": "Выберите тариф и оплатите прямо в чате (Telegram Stars).",
+        "plan_2": "150 ⭐ / 30 дней",
+        "plan_5": "375 ⭐ / 90 дней",
+        "subscribe_btn": "Подписаться",
+        "grant_success": "⭐ Премиум выдан на {} дней",
+        "not_admin": "⛔ Только администратор может выполнить это действие",
+        "today": "Сегодня",
+        "yesterday": "Вчера",
+        "templates": "Шаблоны чеклистов",
+        "apply_template": "Применить шаблон",
+        "edit_checklists": "Редактировать чеклисты",
+        "no_templates": "Нет шаблонов",
+        "total_pnl_label": "Общая прибыль / убыток",
+        "avg_trade_label": "Средний результат сделки",
+        "best_trade_label": "Самая прибыльная сделка",
+        "worst_trade_label": "Самая убыточная сделка",
+        "risk_section": "Риск-менеджмент (дисциплина трейдера):",
+        "rr_label": "Средний RR (Risk / Reward)",
+        "avg_risk_label": "Средний риск на сделку",
+        "max_dd_label": "Максимальная просадка",
+        "win_streak_label": "Серия побед",
+        "loss_streak_label": "Серия убытков",
+        "pnl": "P/L",
+    },
+    "en": {
+        "start": "🧭 TRADER'S JOURNAL\n\n✓ Add trades (LONG/SHORT)\n✓ Full analytics\n✓ Trading checklists\n✓ Export to Excel\n✓ Calendar for dates\n✓ Up to {} trades free\n\nSelect action:".format(MAX_TRADES_FREE),
+        "my_trades": "📒 My Trades",
+        "new_trade": "📝 New Trade",
+        "history": "🕓 History",
+        "edit": "✍️ Edit",
+        "delete": "🗑 Delete",
+        "accounts": "🏦 Accounts",
+        "create_acc": "🆕 Create",
+        "list_acc": "📜 List",
+        "analytics": "📈 Analytics",
+        "export": "📤 Export",
+        "help": "🆘 Help",
+        "settings": "🧰 Settings",
+        "select_account": "Select account:",
+        "select_pair": "Select pair:",
+        "select_type": "Select type:",
+        "select_date": "Select date:",
+        "enter_sum": "Enter amount (USD):",
+        "enter_tp": "Enter Take-Profit (USD):",
+        "select_status": "Select status:",
+        "enter_strategy": "Enter strategy:",
+        "checklist": "Checklist:",
+        "enter_notes": "Enter notes:",
+        "select_screenshot": "Screenshot (skip):",
+        "confirm": "✓ CONFIRMATION",
+        "save": "✓ Yes",
+        "cancel": "✗ No",
+        "saved": "✅ Saved!",
+        "cancelled": "✗ Cancelled",
+        "no_trades": "No trades",
+        "select_field": "What to change?",
+        "new_value": "New value:",
+        "deleted": "✓ Deleted",
+        "profit": "In profit",
+        "loss": "In loss",
+        "closed": "Closed",
+        "skip": "Skip",
+        "create_checklist": "+ Create",
+        "pair": "Pair",
+        "type": "Type",
+        "open_date": "Entry",
+        "close_date": "Exit",
+        "amount": "Amount",
+        "tp": "TP",
+        "status": "Status",
+        "strategy": "Strategy",
+        "notes": "Notes",
+        "limit": "⚠️ Limit {} trades! Get premium".format(MAX_TRADES_FREE),
+        "no_account": "Create account first!",
+        "select_account_export": "Select account to export:",
+        "sent": "📩 Sent!",
+        "acc_name": "Name:",
+        "acc_balance": "Balance:",
+        "acc_created": "🎉 Account created",
+        "all_trades": "ALL TRADES:",
+        "analytics_text": "ANALYTICS\n\nTotal: {}\nWins: {}\nLosses: {}\nWin Rate: {:.1f}%",
+        "language": "🌍 Select language",
+        "current_lang": "Current language: ",
+        "profile": "🧑‍💼 PROFILE",
+        "id": "ID: ",
+        "username": "Username: @",
+        "trades_count": "Trades: ",
+        "step": "Step",
+        "pair_label": "Pair",
+        "type_label": "Type",
+        "date_label": "Date",
+        "sum_label": "Amount",
+        "current": "Current balance:",
+        "subscribe": "💳 Subscription",
+        "subscribe_info": "Choose plan and pay directly in chat (Telegram Stars).",
+        "plan_2": "150 ⭐ / 30 days",
+        "plan_5": "375 ⭐ / 90 days",
+        "subscribe_btn": "Subscribe",
+        "grant_success": "⭐ Premium granted for {} days",
+        "not_admin": "⛔ Only admin can perform this action",
+        "today": "Today",
+        "yesterday": "Yesterday",
+        "templates": "Checklist templates",
+        "apply_template": "Apply template",
+        "edit_checklists": "Edit checklists",
+        "no_templates": "No templates",
+        "total_pnl_label": "Total P/L",
+        "avg_trade_label": "Average trade result",
+        "best_trade_label": "Best trade",
+        "worst_trade_label": "Worst trade",
+        "risk_section": "Risk management (trader discipline):",
+        "rr_label": "Average RR (Risk / Reward)",
+        "avg_risk_label": "Average risk per trade",
+        "max_dd_label": "Maximum drawdown",
+        "win_streak_label": "Win streak",
+        "loss_streak_label": "Loss streak",
+        "pnl": "P/L",
+    }
 }
 
 def get_text(user_id: int, key: str) -> str:
@@ -374,7 +552,6 @@ def main_menu(user_id: int) -> ReplyKeyboardMarkup:
 
 def calendar_kb(year: int, month: int, user_id: int) -> InlineKeyboardMarkup:
     kb = []
-    # Навигация
     prev_m, prev_y = (month - 1, year) if month > 1 else (12, year - 1)
     next_m, next_y = (month + 1, year) if month < 12 else (1, year + 1)
     kb.append([
@@ -382,18 +559,15 @@ def calendar_kb(year: int, month: int, user_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=f"{year}-{month:02d}", callback_data="noop"),
         InlineKeyboardButton(text="▶️", callback_data=f"cal_{next_y}_{next_m}")
     ])
-    # Сегодня / Вчера
     today_dt = date.today()
     yesterday_dt = today_dt - timedelta(days=1)
     kb.append([
         InlineKeyboardButton(text=get_text(user_id, "today"), callback_data=f"dt_{today_dt.year}_{today_dt.month}_{today_dt.day}"),
         InlineKeyboardButton(text=get_text(user_id, "yesterday"), callback_data=f"dt_{yesterday_dt.year}_{yesterday_dt.month}_{yesterday_dt.day}")
     ])
-    # Дни недели
     lang = db.get_language(user_id)
     day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] if lang == "en" else ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
     kb.append([InlineKeyboardButton(text=dn, callback_data="noop") for dn in day_names])
-    # Числа
     for week in cal.monthcalendar(year, month):
         row = []
         for day in week:
@@ -407,34 +581,23 @@ def calendar_kb(year: int, month: int, user_id: int) -> InlineKeyboardMarkup:
 
 # ========== Статистика ==========
 def calculate_full_stats(user_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Расширенная статистика и риск-менеджмент по всем сделкам пользователя.
-    """
     pnls = db.get_all_trades_pnl(user_id)
     if not pnls:
         return None
-
     total = len(pnls)
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
-
     profitable_count = len(wins)
     losing_count = len(losses)
     win_rate = round(profitable_count / total * 100, 2) if total else 0.0
-
     total_pnl = round(sum(pnls), 2)
     avg_trade = round(total_pnl / total, 2) if total else 0.0
-
     best_trade = max(pnls) if pnls else 0.0
     worst_trade = min(pnls) if pnls else 0.0
-
     avg_risk = round(sum(abs(p) for p in losses) / losing_count, 2) if losing_count else 0.0
-
     avg_win = sum(wins) / profitable_count if profitable_count else 0.0
     avg_loss_abs = abs(sum(losses) / losing_count) if losing_count else 0.0
-    avg_rr = round(avg_win / avg_loss_abs, 2) if avg_loss_abs > 0 else None  # None вместо inf
-
-    # Максимальная просадка
+    avg_rr = round(avg_win / avg_loss_abs, 2) if avg_loss_abs > 0 else None
     equity = 0.0
     peak = 0.0
     max_drawdown = 0.0
@@ -446,8 +609,6 @@ def calculate_full_stats(user_id: int) -> Optional[Dict[str, Any]]:
         if drawdown > max_drawdown:
             max_drawdown = drawdown
     max_drawdown = round(max_drawdown, 2)
-
-    # Серии
     max_win_streak = max_loss_streak = 0
     cur_win_streak = cur_loss_streak = 0
     for p in pnls:
@@ -461,7 +622,6 @@ def calculate_full_stats(user_id: int) -> Optional[Dict[str, Any]]:
             cur_win_streak = cur_loss_streak = 0
         max_win_streak = max(max_win_streak, cur_win_streak)
         max_loss_streak = max(max_loss_streak, cur_loss_streak)
-
     return {
         "total": total,
         "profitable": profitable_count,
@@ -499,14 +659,12 @@ def create_equity_chart(user_id: int):
     for p in profits:
         total += p
         equity.append(total)
-
     fig, ax = plt.subplots()
     ax.plot(dates, equity, marker='o')
     ax.set_title("Equity Curve")
     ax.set_xlabel("Дата")
     ax.set_ylabel("Прибыль")
     fig.autofmt_xdate()
-
     buf = BytesIO()
     plt.savefig(buf, format="png")
     buf.seek(0)
@@ -516,21 +674,21 @@ def create_equity_chart(user_id: int):
 class States(StatesGroup):
     add_account_name = State()
     add_account_balance = State()
-    trade_step_1 = State()   # выбор счёта
-    trade_step_2 = State()   # ввод пары
-    trade_step_3 = State()   # выбор типа
-    trade_step_4 = State()   # выбор даты входа
-    trade_step_5 = State()   # выбор даты выхода
-    trade_step_6 = State()   # ввод суммы
-    trade_step_7 = State()   # ввод TP
-    trade_step_8 = State()   # выбор статуса
-    trade_step_9 = State()   # ввод стратегии
-    trade_step_10 = State()  # чеклист
-    trade_step_11 = State()  # заметки
-    trade_step_12 = State()  # скриншот
-    edit_trade = State()     # выбор сделки для редактирования
-    edit_field = State()     # выбор поля
-    edit_checklist = State() # редактирование чеклиста
+    trade_step_1 = State()
+    trade_step_2 = State()
+    trade_step_3 = State()
+    trade_step_4 = State()
+    trade_step_5 = State()
+    trade_step_6 = State()
+    trade_step_7 = State()
+    trade_step_8 = State()
+    trade_step_9 = State()
+    trade_step_10 = State()
+    trade_step_11 = State()
+    trade_step_12 = State()
+    edit_trade = State()
+    edit_field = State()
+    edit_checklist = State()
     admin_wait_password = State()
 
 # ========== Константы callback_data ==========
@@ -563,8 +721,9 @@ async def start(message: types.Message):
     await message.answer(get_text(user_id, "start"), reply_markup=main_menu(user_id))
 
 # ---------- Меню "Мои сделки" ----------
-@dp.message(F.text.regexp(r"Мои сделки|My Trades"))
-async def trades_menu(message: types.Message):
+@dp.message(F.text.in_({"Мои сделки", "My Trades"}))
+async def trades_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     count = db.count_user_trades(user_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -580,7 +739,12 @@ async def trades_menu(message: types.Message):
 async def new_trade(call: types.CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
     if not can_add_trade(user_id):
-        await call.answer(get_text(user_id, "limit"), show_alert=True)
+        # Предлагаем продлить подписку
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Продлить подписку", callback_data=CALLBACK_SUBSCRIBE)]
+        ])
+        await call.message.answer("⚠️ Вы достигли лимита бесплатных сделок. Купите подписку для неограниченного доступа.", reply_markup=kb)
+        await call.answer()
         return
     accounts = db.get_accounts(user_id)
     if not accounts:
@@ -602,7 +766,6 @@ async def select_acc(call: types.CallbackQuery, state: FSMContext):
         await call.answer("Invalid account")
         return
     await state.update_data(account_id=acc_id)
-    # выбор пары
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🪙 BTC/USD", callback_data="pair_BTC/USD")],
         [InlineKeyboardButton(text="🪙 ETH/USD", callback_data="pair_ETH/USD")],
@@ -620,10 +783,8 @@ async def select_pair(call: types.CallbackQuery, state: FSMContext):
     pair = call.data.replace("pair_", "")
     if pair == "other":
         await call.message.edit_text(f"✏️ {get_text(user_id, 'pair')}:")
-        # остаёмся в том же состоянии, но ожидаем текст
         return
     await state.update_data(pair=pair)
-    # переход к выбору типа
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📈 LONG", callback_data="type_long")],
         [InlineKeyboardButton(text="📉 SHORT", callback_data="type_short")],
@@ -698,14 +859,13 @@ async def select_dt(call: types.CallbackQuery, state: FSMContext):
         await state.set_state(States.trade_step_6)
     await call.answer()
 
-# ---------- Ввод суммы (с парсингом) ----------
+# ---------- Ввод суммы ----------
 @dp.message(States.trade_step_6)
 async def step_6(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if not message.text:
         return
     text = message.text.strip()
-    # Проверка на команду отмены
     if text.startswith("/") or is_main_menu_button(text):
         await state.clear()
         await message.answer("Действие отменено.", reply_markup=main_menu(user_id))
@@ -792,7 +952,6 @@ async def step_9(message: types.Message, state: FSMContext):
 async def create_check(call: types.CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
     await call.message.edit_text("✏️ Вводите пункты (каждый с новой строки):")
-    # состояние остаётся trade_step_10, но теперь ждём текст
     await call.answer()
 
 @dp.message(States.trade_step_10)
@@ -807,7 +966,6 @@ async def step_10_save_checklist(message: types.Message, state: FSMContext):
         return
     items = [i.strip().lstrip("-").strip() for i in text.split("\n") if i.strip()]
     checklist = {item: False for item in items}
-    # сохраняем во временный файл
     Path("trade_checklists").mkdir(exist_ok=True)
     fn = f"trade_checklists/{user_id}_{int(datetime.now().timestamp())}.json"
     try:
@@ -863,7 +1021,6 @@ async def step_12_photo(message: types.Message, state: FSMContext):
 
 @dp.message(States.trade_step_12)
 async def step_12_no_photo(message: types.Message, state: FSMContext):
-    # если прислали не фото, считаем что пропустили
     user_id = message.from_user.id
     if message.text and (message.text.startswith("/") or is_main_menu_button(message.text)):
         await state.clear()
@@ -923,7 +1080,6 @@ async def skip_handler(call: types.CallbackQuery, state: FSMContext):
     curr_state = await state.get_state()
     if curr_state == States.trade_step_2.state:
         await state.update_data(pair="N/A")
-        # переходим к выбору типа
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📈 LONG", callback_data="type_long")],
             [InlineKeyboardButton(text="📉 SHORT", callback_data="type_short")],
@@ -1125,7 +1281,6 @@ async def edit_id(call: types.CallbackQuery, state: FSMContext):
 async def ed_f(call: types.CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
     field_short = call.data.split("_")[2]
-    # field_map может быть избыточной, но оставим для ясности
     field_map = {
         "pair": "pair",
         "trade_type": "trade_type",
@@ -1141,7 +1296,6 @@ async def ed_f(call: types.CallbackQuery, state: FSMContext):
     field = field_map.get(field_short, field_short)
     await state.update_data(field=field)
     await call.message.edit_text(get_text(user_id, "new_value"))
-    # состояние остаётся edit_field
     await call.answer()
 
 @dp.message(States.edit_field)
@@ -1190,8 +1344,9 @@ async def save_edit(message: types.Message, state: FSMContext):
         await message.answer("❌ Ошибка обновления")
 
 # ---------- Счета ----------
-@dp.message(F.text.regexp(r"🏦|Счет|Accounts"))
-async def accounts(message: types.Message):
+@dp.message(F.text.in_({"Счет", "Accounts"}))
+async def accounts(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=get_text(user_id, "create_acc"), callback_data=CALLBACK_NEW_ACCOUNT)],
@@ -1266,8 +1421,9 @@ async def list_acc(call: types.CallbackQuery):
     await call.answer()
 
 # ---------- Аналитика ----------
-@dp.message(F.text.regexp(r"📈|Analytics"))
-async def analytics(message: types.Message):
+@dp.message(F.text.in_({"Аналитика", "Analytics"}))
+async def analytics(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     stats = calculate_full_stats(user_id)
     if not stats:
@@ -1295,8 +1451,9 @@ async def analytics(message: types.Message):
     await message.answer(text, reply_markup=main_menu(user_id))
 
 # ---------- Экспорт ----------
-@dp.message(F.text.regexp(r"Экспорт|Export"))
-async def export_start(message: types.Message):
+@dp.message(F.text.in_({"Экспорт", "Export"}))
+async def export_start(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     accounts = db.get_accounts(user_id)
     if not accounts:
@@ -1355,24 +1512,21 @@ async def export_do(call: types.CallbackQuery):
     try:
         wb.save(fn)
         caption = f"✅ Сделки по счёту «{account_name}» — {len(trades)} записей."
-        # Отправляем новым сообщением, не редактируем старое
         await bot.send_document(
             call.from_user.id,
             FSInputFile(fn),
             caption=caption,
         )
-        # Удаляем временный файл
         Path(fn).unlink(missing_ok=True)
-        # Подтверждаем callback и отправляем сообщение об успехе
         await call.answer(get_text(user_id, "sent"))
-        # Можно дополнительно отправить уведомление, но не обязательно
     except Exception as e:
         logger.exception("export error")
         await call.answer("❌ Ошибка при создании файла")
 
 # ---------- Команда /stats ----------
 @dp.message(Command("stats"))
-async def stats_cmd(message: types.Message):
+async def stats_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     stats = calculate_full_stats(user_id)
     if not stats:
@@ -1398,9 +1552,10 @@ Winrate: {stats["win_rate"]}%
 """
     await message.answer(text)
 
-# ---------- Команда /export (все сделки без выбора счёта) ----------
+# ---------- Команда /export (все сделки) ----------
 @dp.message(Command("export"))
-async def export_excel(message: types.Message):
+async def export_excel(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     trades = db.get_trades_for_export(user_id)
     if not trades:
@@ -1421,7 +1576,8 @@ async def export_excel(message: types.Message):
 
 # ---------- Команда /equity ----------
 @dp.message(Command("equity"))
-async def equity_cmd(message: types.Message):
+async def equity_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     chart = create_equity_chart(user_id)
     if chart:
@@ -1430,8 +1586,9 @@ async def equity_cmd(message: types.Message):
         await message.answer("Нет данных для графика")
 
 # ---------- Помощь ----------
-@dp.message(F.text.regexp(r"🆘|Помощь|Help"))
-async def help_cmd(message: types.Message):
+@dp.message(F.text.in_({"Помощь", "Help"}))
+async def help_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     text = """
 📚 ПОМОЩЬ
@@ -1463,8 +1620,9 @@ async def help_cmd(message: types.Message):
     await message.answer(text, reply_markup=main_menu(user_id))
 
 # ---------- Настройки ----------
-@dp.message(F.text.regexp(r"🧰|Настройки|Settings"))
-async def settings(message: types.Message):
+@dp.message(F.text.in_({"Настройки", "Settings"}))
+async def settings(message: types.Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     user = db.get_user(user_id)
     if not user:
@@ -1501,13 +1659,13 @@ async def set_lang(call: types.CallbackQuery):
     await call.message.edit_text(f"✅ Язык изменен на {lang_text}")
     await call.answer()
 
-# ---------- Подписка (Telegram Payments) ----------
+# ---------- Подписка (Telegram Stars) ----------
 @dp.callback_query(F.data == CALLBACK_SUBSCRIBE)
 async def subscribe_menu(call: types.CallbackQuery):
     user_id = call.from_user.id
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=get_text(user_id, "plan_2"), callback_data="plan_30_200")],
-        [InlineKeyboardButton(text=get_text(user_id, "plan_5"), callback_data="plan_90_500")],
+        [InlineKeyboardButton(text=get_text(user_id, "plan_2"), callback_data="plan_30_150")],
+        [InlineKeyboardButton(text=get_text(user_id, "plan_5"), callback_data="plan_90_375")],
     ])
     await call.message.edit_text(get_text(user_id, "subscribe_info"), reply_markup=kb)
     await call.answer()
@@ -1515,35 +1673,34 @@ async def subscribe_menu(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("plan_"))
 async def plan_choice(call: types.CallbackQuery):
     try:
-        _, days_str, cents_str = call.data.split("_")
+        _, days_str, stars_str = call.data.split("_")
         days = int(days_str)
-        price_cents = int(cents_str)
+        price_stars = int(stars_str)  # цена в звездах
     except Exception:
         await call.answer("Invalid plan")
         return
     user_id = call.from_user.id
-    if not PROVIDER_TOKEN:
-        await call.answer("Payments not configured", show_alert=True)
-        return
     title = f"Premium {days} days"
-    description = f"Premium access for {days} days"
+    description = f"Доступ к боту на {days} дней"
     payload = f"subscribe:{user_id}:{days}"
-    prices = [LabeledPrice(label=title, amount=price_cents)]
+    prices = [LabeledPrice(label=title, amount=price_stars)]
+
     try:
+        # Отправляем инвойс в звёздах (provider_token пустой, валюта XTR)
         await bot.send_invoice(
             chat_id=user_id,
             title=title,
             description=description,
             payload=payload,
-            provider_token=PROVIDER_TOKEN,
-            currency=CURRENCY,
+            provider_token="",          # обязательно пустая строка для Stars
+            currency="XTR",              # валюта Stars
             prices=prices,
             start_parameter="premium"
         )
         await call.answer()
     except Exception as e:
         logger.exception("send_invoice failed")
-        await call.answer("Failed to create invoice", show_alert=True)
+        await call.answer(f"Ошибка: {e}", show_alert=True)
 
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout_q: PreCheckoutQuery):
@@ -1561,7 +1718,7 @@ async def process_successful_payment(message: types.Message):
             uid = int(parts[1])
             days = int(parts[2])
             provider_id = message.successful_payment.telegram_payment_charge_id
-            period_end = db.grant_premium(uid, days, provider="telegram_payments", provider_id=provider_id)
+            period_end = db.grant_premium(uid, days, provider="telegram_stars", provider_id=provider_id)
             if period_end:
                 await message.answer(get_text(uid, "grant_success").format(days))
     except Exception as e:
@@ -1570,6 +1727,9 @@ async def process_successful_payment(message: types.Message):
 # ---------- Админ: ручная выдача премиума ----------
 @dp.message(Command("grant_manual"))
 async def cmd_grant_manual(message: types.Message):
+    if not ADMIN_PASSWORD:
+        await message.answer("Админ-панель не настроена (пароль не задан).")
+        return
     user = message.from_user.id
     if user != ADMIN_ID:
         await message.answer(get_text(user, "not_admin"))
@@ -1594,8 +1754,6 @@ async def cmd_grant_manual(message: types.Message):
 
 # ---------- Админ: вход по паролю ----------
 async def _activate_admin_premium(user_id: int, username: str, first_name: str) -> bool:
-    """Активация бессрочного премиума для админа."""
-    # Бессрочный премиум: устанавливаем очень далёкую дату (например, 2100 год)
     far_future = "2100-01-01T00:00:00"
     try:
         db.cursor.execute(
@@ -1620,6 +1778,9 @@ async def _activate_admin_premium(user_id: int, username: str, first_name: str) 
 
 @dp.message(Command("admin"))
 async def admin_login(message: types.Message, state: FSMContext):
+    if not ADMIN_PASSWORD:
+        await message.answer("Админ-панель не настроена (пароль не задан).")
+        return
     parts = message.text.split()
     if len(parts) >= 2:
         password = parts[1].strip()
@@ -1769,7 +1930,6 @@ def is_main_menu_button(text: str) -> bool:
 # ---------- Вебхук ----------
 async def handle_webhook(request):
     try:
-        # Проверка секретного токена, если задан
         if WEBHOOK_SECRET:
             secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if secret != WEBHOOK_SECRET:
@@ -1800,4 +1960,3 @@ app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, host="0.0.0.0")
-
