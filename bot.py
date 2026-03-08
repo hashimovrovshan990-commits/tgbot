@@ -1917,8 +1917,8 @@ async def edit_checklist_save(message: types.Message, state: FSMContext):
 
 # ---------- Проверка нажатия кнопок главного меню ----------
 MENU_BUTTON_MARKERS = (
-    "Мои сделки", "My Trades", "Счет", "Accounts", "Аналитика", "Analytics",
-    "Экспорт", "Export", "Помощь", "Help", "Настройки", "Settings",
+    "📒 Мои сделки", "📒 My Trades", "🏦 Счет", "🏦 Accounts", "📈 Аналитика", "📈 Analytics",
+    "📤 Экспорт", "📤 Export", "🆘 Помощь", "🆘 Help", "🧰 Настройки", "🧰 Settings",
 )
 
 def is_main_menu_button(text: str) -> bool:
@@ -1960,3 +1960,4 @@ app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, host="0.0.0.0")
+
