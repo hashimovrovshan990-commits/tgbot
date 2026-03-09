@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Trader's Journal – финальная версия с оплатой в Telegram Stars
+Trader's Journal – финальная версия с динамической справкой
 Подписка только по желанию пользователя, без автопродления.
-ВСЕ КНОПКИ ГЛАВНОГО МЕНЮ РАБОТАЮТ (исправлены фильтры с эмодзи)
 """
 
 import logging
@@ -44,10 +43,9 @@ if not TOKEN:
 
 MAX_TRADES_FREE = int(get_env("MAX_TRADES_FREE", "20"))
 ADMIN_ID = int(get_env("ADMIN_ID", "0"))
-ADMIN_PASSWORD = get_env("ADMIN_PASSWORD")  # может быть пустым, тогда админ-команды не работают
+ADMIN_PASSWORD = get_env("ADMIN_PASSWORD")
 
-# Для Stars валюта XTR, provider_token не нужен
-CURRENCY = "XTR"  # только для совместимости, но фактически используем XTR
+CURRENCY = "XTR"
 
 WEBHOOK_DOMAIN = get_env("WEBHOOK_DOMAIN", "https://tgbot-ljj1.onrender.com")
 WEBHOOK_SECRET = get_env("WEBHOOK_SECRET", "")
@@ -90,6 +88,7 @@ class Database:
                 is_premium INTEGER DEFAULT 0,
                 premium_until TEXT,
                 is_admin INTEGER DEFAULT 0,
+                blocked INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -129,6 +128,11 @@ class Database:
                 status TEXT,
                 period_end TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
             );
         """)
         self.commit()
@@ -288,7 +292,7 @@ class Database:
             data.get("checklist"),
             data.get("notes", ""),
             data.get("screenshot_path"),
-            data.get("pnl")  # может быть None
+            data.get("pnl")
         ))
         self.commit()
         return self.cursor.lastrowid
@@ -308,7 +312,6 @@ class Database:
         self.commit()
 
     def get_all_trades_pnl(self, user_id: int) -> List[float]:
-        # выбираем только сделки с указанным PnL (не NULL)
         self.cursor.execute("SELECT pnl FROM trades WHERE user_id=? AND pnl IS NOT NULL", (user_id,))
         return [float(row[0]) for row in self.cursor.fetchall()]
 
@@ -812,7 +815,6 @@ async def trades_menu(message: types.Message, state: FSMContext):
 async def new_trade(call: types.CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
     if not can_add_trade(user_id):
-        # Предлагаем продлить подписку
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Продлить подписку", callback_data=CALLBACK_SUBSCRIBE)]
         ])
@@ -1705,12 +1707,39 @@ async def equity_cmd(message: types.Message, state: FSMContext):
     else:
         await message.answer("Нет данных для графика")
 
-# ---------- Помощь (расширенный FAQ) ----------
+# ---------- Помощь (динамическая) ----------
 @dp.message(F.text.in_({"🆘 Помощь", "🆘 Help"}))
+@dp.message(Command("help"))
 async def help_cmd(message: types.Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
-    await message.answer(get_text(user_id, "faq"), reply_markup=main_menu(user_id))
+    is_admin_user = (user_id == ADMIN_ID and ADMIN_ID != 0)
+    
+    # Базовый текст для всех пользователей
+    text = get_text(user_id, "faq")
+    
+    # Если пользователь админ, добавляем список админ-команд
+    if is_admin_user:
+        admin_commands = """
+        
+**🔧 Админ-команды:**
+
+/admin – вход по паролю (если ещё не активирован)
+/admin_stats – общая статистика
+/user_info <id> – информация о пользователе
+/grant_manual <id> <days> – выдать премиум
+/revoke_premium <id> – отозвать премиум
+/broadcast <текст> – рассылка всем пользователям
+/set_tariff <days> <stars> – изменить тариф
+/tariffs – просмотр тарифов
+/admin_logs [N] – показать логи
+/block_user <id> – заблокировать пользователя
+/unblock_user <id> – разблокировать
+/admin_help – справка по админ-командам
+"""
+        text += admin_commands
+    
+    await message.answer(text, reply_markup=main_menu(user_id))
 
 # ---------- Настройки ----------
 @dp.message(F.text.in_({"🧰 Настройки", "🧰 Settings"}))
@@ -1768,7 +1797,7 @@ async def plan_choice(call: types.CallbackQuery):
     try:
         _, days_str, stars_str = call.data.split("_")
         days = int(days_str)
-        price_stars = int(stars_str)  # цена в звездах
+        price_stars = int(stars_str)
     except Exception:
         await call.answer("Invalid plan")
         return
@@ -1779,14 +1808,13 @@ async def plan_choice(call: types.CallbackQuery):
     prices = [LabeledPrice(label=title, amount=price_stars)]
 
     try:
-        # Отправляем инвойс в звёздах (provider_token пустой, валюта XTR)
         await bot.send_invoice(
             chat_id=user_id,
             title=title,
             description=description,
             payload=payload,
-            provider_token="",          # обязательно пустая строка для Stars
-            currency="XTR",              # валюта Stars
+            provider_token="",
+            currency="XTR",
             prices=prices,
             start_parameter="premium"
         )
@@ -1834,7 +1862,6 @@ async def feedback_handle(message: types.Message, state: FSMContext):
     if not text:
         await message.answer("Пожалуйста, напишите сообщение.")
         return
-    # Пересылаем админу
     try:
         await bot.send_message(
             ADMIN_ID,
