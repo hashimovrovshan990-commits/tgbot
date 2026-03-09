@@ -335,6 +335,11 @@ class Database:
 # Глобальный экземпляр БД
 db = Database(DATABASE_URL)
 
+
+# ========== Регистрация админ-панели ==========
+from admin_handlers import register_admin_handlers
+register_admin_handlers(dp, bot, db, ADMIN_ID, ADMIN_PASSWORD)
+
 # ========== Вспомогательные функции ==========
 def parse_number(text: str) -> float:
     if not text or not text.strip():
@@ -3922,5 +3927,6 @@ app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
     web.run_app(app, port=PORT, host="0.0.0.0")
+
 
 
